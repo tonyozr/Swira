@@ -128,13 +128,24 @@ public actor FiltersService {
     /// - A **standalone** name (no hierarchy separator) is created as a **favourite**. The
     ///   sidebar's Favourites section is the *only* place a plain-named filter is ever shown
     ///   (spec §2.1/§2.2) — creating one non-favourite would make it invisible immediately.
-    /// - A **hierarchical** name (`Swira: Versions: Current`) is created **non-favourite**: it
-    ///   is already visible in the filter tree by virtue of its name, and favouriting is a
-    ///   separate, explicit choice there.
+    /// - A **hierarchical** name (`Swira: Versions: Current`) is created **non-favourite** on
+    ///   Cloud: it's already visible in the filter tree by virtue of its name, and favouriting
+    ///   is a separate, explicit choice there.
+    /// - On **Data Center**, every filter is created favourite regardless of name shape. DC has
+    ///   no `filter/search`/`filter/my` — `mine()` and `tree()` fall back to favourites alone
+    ///   (see their doc comments) — so a non-favourite filter would be created and then
+    ///   immediately vanish from every listing Swira can make. The sidebar hides tree filters
+    ///   from the Favourites section regardless of this flag (see `WebAPI`'s sidebar route), so
+    ///   the workaround doesn't cause hierarchical filters to visibly double up there.
     public func create(_ input: FilterInput) async throws -> JiraFilter {
         var input = input
         if input.favourite == nil {
-            input.favourite = FilterPath(name: input.name).isRoot
+            switch deployment {
+            case .cloud:
+                input.favourite = FilterPath(name: input.name).isRoot
+            case .dataCenter:
+                input.favourite = true
+            }
         }
         let created = try await client.send(
             FilterEndpoints.create(), body: input, as: JiraFilter.self

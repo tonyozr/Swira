@@ -11,9 +11,11 @@ The keywords MUST, SHOULD, and MAY are used in their usual normative sense.
 All data access goes through `SwiraCore`; clients MUST NOT talk to Jira directly. Core
 concepts referenced below: `JiraFilter`, `FilterPath` / `FilterTree` (the name-encoded
 hierarchy, separator `": "`), `Cached<T>` (value plus origin and staleness), and the
-creation-time favourite default: standalone (non-hierarchical) filters are created as
-favourites, since Favourites is the only place they are ever shown; hierarchical filters are
-created non-favourite, since the tree already makes them visible.
+creation-time favourite default: standalone (non-hierarchical) filters are always created as
+favourites, since Favourites is the only place they are ever shown. Hierarchical filters are
+created non-favourite on Cloud, since the tree already makes them visible there — but always
+favourite on Data Center, a deployment-specific workaround (`FiltersService.create`) for its
+missing `filter/search`/`filter/my` endpoints (§2.1).
 
 ---
 
@@ -49,19 +51,20 @@ The sidebar contains exactly two sections, in this order, and nothing else.
 
 ### 2.1 Favourites
 
-- Lists **all favourite filters** of the account, flat, regardless of name shape.
-- Source: `FiltersService.favourites()`.
-- This is the only place a filter with a plain (non-hierarchical) name — e.g. `Jira 8` —
-  appears.
-- Hierarchical favourites are shown under their **full name** (`Swira: Versions: Current`),
-  never just the leaf — two favourites named `Current` in different branches must stay
-  distinguishable.
+- Lists every favourite filter **whose name has no hierarchy separator** — a plain name like
+  `Jira 8`. This is the only place such a filter is ever shown.
+- Source: `FiltersService.favourites()`, filtered to exclude anything also shown in the filter
+  tree (§2.2).
+- A hierarchical filter is never listed here, even when it is favourite. On Cloud this
+  distinction is mostly moot (hierarchical filters default to non-favourite); on Data Center,
+  where every filter is created favourite as a workaround (see the intro), it matters —
+  without this exclusion, every hierarchical filter would visibly double up in Favourites.
 
 ### 2.2 Filter tree
 
 - Below Favourites, lists **every filter whose name contains the hierarchy separator
-  `": "`**, rendered as a tree via `FilterTree.build(from:)`. Favourite status is
-  irrelevant here: hierarchical favourites appear in both sections.
+  `": "`**, rendered as a tree via `FilterTree.build(from:)`. Favourite status is irrelevant to
+  whether a filter appears here — only its name shape decides that.
 - Filters without the separator do NOT appear in this section.
 - Branch points with no filter of their own (virtual nodes) are rendered as plain,
   non-selectable-as-filter group rows; they expand and collapse but do not open a query.
@@ -76,9 +79,11 @@ The sidebar contains exactly two sections, in this order, and nothing else.
   New filters default to the `Swira` root (`FilterPath.defaultRoot`) when created from the
   tree's top level, or to the selected node's path when created in context. Any root is
   legal; `Swira` is only the default. Filters created at a hierarchical path are
-  non-favourite (core default); a filter created as a standalone name outside any tree
-  position is created as a favourite, since that is the only way it stays visible. JQL MAY
-  be left empty — a filter with no conditions is valid and simply matches everything the
+  non-favourite on Cloud (core default) and favourite on Data Center (§2.1, a
+  visibility workaround — it does not affect where the filter is shown, since the tree
+  section ignores favourite status); a filter created as a standalone name outside any tree
+  position is always created as a favourite, since that is the only way it stays visible. JQL
+  MAY be left empty — a filter with no conditions is valid and simply matches everything the
   account can see.
 - **After creation**, the client MUST select and open the new filter immediately, the same as
   clicking it in the sidebar, rather than leaving the user to find it themselves. If it was

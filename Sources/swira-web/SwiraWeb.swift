@@ -18,6 +18,12 @@ struct SwiraWeb: ParsableCommand {
     @Option(name: .shortAndLong, help: "Port to listen on.")
     var port: UInt16 = 8787
 
+    @Option(
+        name: .long,
+        help: "Unix domain socket path to listen on instead of TCP. Overrides --port when set."
+    )
+    var socket: String?
+
     func run() throws {
         let logger = Logger(label: "swira.web")
 
@@ -40,12 +46,18 @@ struct SwiraWeb: ParsableCommand {
             logger.warning("Starting unconfigured: \(configurationError ?? "unknown reason")")
         }
 
+        let address: HTTPServer.ListenAddress = socket.map { .unixSocket(path: $0) } ?? .tcp(port: port)
         let api = WebAPI(swira: swira, configurationError: configurationError)
-        let server = HTTPServer(port: port, logger: logger) { request in
+        let server = HTTPServer(address: address, logger: logger) { request in
             await api.handle(request)
         }
 
-        print("Swira web client: http://127.0.0.1:\(port)/")
+        switch address {
+        case .tcp(let port):
+            print("Swira web client: http://127.0.0.1:\(port)/")
+        case .unixSocket(let path):
+            print("Swira web client: unix socket at \(path)")
+        }
         try server.run()
     }
 }

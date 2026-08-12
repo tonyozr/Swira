@@ -62,8 +62,14 @@ struct WebAPI: Sendable {
             // The sidebar's tree section holds only name-structured filters (spec §2.2);
             // plain names live in Favourites alone.
             let structured = tree.value.filter { !$0.children.isEmpty || $0.path.segments.count > 1 }
+            // A structured filter shown in the tree is never repeated in Favourites, even when
+            // it's actually favourited — on Data Center that's often true of every one of them,
+            // since favouriting is also how `create(at:)` keeps them visible there at all (see
+            // FiltersService.create).
+            let structuredIds = Set(structured.flatMap { $0.allFilters.map(\.id) })
+            let favouritesOnly = favourites.value.filter { !structuredIds.contains($0.id) }
             return try json(SidebarDTO(
-                favourites: favourites.value.map(FilterDTO.init),
+                favourites: favouritesOnly.map(FilterDTO.init),
                 tree: structured.map(NodeDTO.init),
                 meta: MetaDTO(favourites)
             ))

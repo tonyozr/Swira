@@ -17,6 +17,16 @@ import Darwin
 /// request, no TLS (the server binds to the loopback interface only and must never listen on
 /// anything else).
 final class HTTPServer: @unchecked Sendable {
+    /// What to bind: a loopback TCP port, or a Unix domain socket path.
+    ///
+    /// The socket form is for callers that front the web client with their own reverse proxy
+    /// or sandbox instead of exposing a loopback port — e.g. a per-user socket with filesystem
+    /// permissions standing in for the auth this server doesn't otherwise have.
+    enum ListenAddress: Sendable {
+        case tcp(port: UInt16)
+        case unixSocket(path: String)
+    }
+
     struct Request {
         let method: String
         let path: String
@@ -44,17 +54,17 @@ final class HTTPServer: @unchecked Sendable {
 
     typealias Handler = @Sendable (Request) async -> Response
 
-    private let port: UInt16
+    private let address: ListenAddress
     private let handler: Handler
     private let logger: Logger
 
-    init(port: UInt16, logger: Logger, handler: @escaping Handler) {
-        self.port = port
+    init(address: ListenAddress, logger: Logger, handler: @escaping Handler) {
+        self.address = address
         self.handler = handler
         self.logger = logger
     }
 
-    /// Binds the loopback interface and serves until the process exits.
+    /// Binds `address` and serves until the process exits.
     func run() throws {
         #if os(Windows)
         var wsaData = WSADATA()
@@ -63,11 +73,27 @@ final class HTTPServer: @unchecked Sendable {
         }
         #endif
 
-        let listener = socket(AF_INET, sockOptStream, 0)
-        guard listener != invalidSocket else {
-            throw ServerError.startup("socket() failed")
+        let listener: SocketHandle
+        switch address {
+        case .tcp(let port):
+            listener = try makeTCPListener(port: port)
+            logger.info("Serving", metadata: ["url": "http://127.0.0.1:\(port)/"])
+        case .unixSocket(let path):
+            listener = try makeUnixListener(path: path)
+            logger.info("Serving", metadata: ["socket": "\(path)"])
         }
 
+        while true {
+            let client = accept(listener, nil, nil)
+            guard client != invalidSocket else { continue }
+            let thread = Thread { [weak self] in
+                self?.serve(client: client)
+            }
+            thread.start()
+        }
+    }
+
+    private func setReuseAddress(_ listener: SocketHandle) {
         var yes: Int32 = 1
         _ = withUnsafeBytes(of: &yes) { buffer in
             setsockopt(
@@ -76,6 +102,14 @@ final class HTTPServer: @unchecked Sendable {
                 socklen_t(MemoryLayout<Int32>.size)
             )
         }
+    }
+
+    private func makeTCPListener(port: UInt16) throws -> SocketHandle {
+        let listener = socket(AF_INET, sockOptStream, 0)
+        guard listener != invalidSocket else {
+            throw ServerError.startup("socket() failed")
+        }
+        setReuseAddress(listener)
 
         var address = sockaddr_in()
         address.sin_family = addressFamily(AF_INET)
@@ -97,17 +131,54 @@ final class HTTPServer: @unchecked Sendable {
             closeSocket(listener)
             throw ServerError.startup("listen() failed")
         }
+        return listener
+    }
 
-        logger.info("Serving", metadata: ["url": "http://127.0.0.1:\(port)/"])
+    /// Binds a Unix domain socket instead of a TCP port.
+    ///
+    /// Supported on Windows too (`AF_UNIX` has shipped there since the 1803 SDK), so this isn't
+    /// a POSIX-only code path despite the name.
+    private func makeUnixListener(path: String) throws -> SocketHandle {
+        // A stale socket file left behind by a previous run (crash, kill -9) makes bind() fail
+        // with "address already in use" even though nothing is actually listening — clear it
+        // first, same as any other Unix-socket server does.
+        _ = try? FileManager.default.removeItem(atPath: path)
 
-        while true {
-            let client = accept(listener, nil, nil)
-            guard client != invalidSocket else { continue }
-            let thread = Thread { [weak self] in
-                self?.serve(client: client)
-            }
-            thread.start()
+        let listener = socket(AF_UNIX, sockOptStream, 0)
+        guard listener != invalidSocket else {
+            throw ServerError.startup("socket() failed")
         }
+
+        var address = sockaddr_un()
+        address.sun_family = addressFamily(AF_UNIX)
+        let pathBytes = Array(path.utf8)
+        // Must leave room for the trailing NUL the kernel expects to terminate the path within
+        // the fixed-size buffer.
+        let capacity = MemoryLayout.size(ofValue: address.sun_path)
+        guard pathBytes.count < capacity else {
+            closeSocket(listener)
+            throw ServerError.startup(
+                "socket path is too long (\(pathBytes.count) bytes, max \(capacity - 1)): \(path)"
+            )
+        }
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            buffer.copyBytes(from: pathBytes)
+        }
+
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(listener, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        guard bound == 0 else {
+            closeSocket(listener)
+            throw ServerError.startup("bind() failed for socket \(path)")
+        }
+        guard listen(listener, 16) == 0 else {
+            closeSocket(listener)
+            throw ServerError.startup("listen() failed")
+        }
+        return listener
     }
 
     // MARK: - Per-connection handling
