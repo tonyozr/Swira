@@ -183,6 +183,23 @@ struct DataCenterTests {
         #expect(page.isLast == true)
     }
 
+    @Test("A hierarchical name is still created favourite on Data Center — the only way it stays listed")
+    func createsHierarchicalFilterAsFavouriteOnDataCenter() async throws {
+        let mock = MockTransport(stubs: [.ok(try Fixture.data("filter"))])
+        let service = FiltersService(
+            client: JiraClient(transport: mock, auth: NoAuthProvider()),
+            deployment: .dataCenter
+        )
+
+        // On Cloud this same name defaults to non-favourite (it's already visible in the tree).
+        // On Data Center, `mine()`/`tree()` fall back to favourites alone — a non-favourite
+        // filter would vanish from every listing the moment it's created.
+        _ = try await service.create(FilterInput(name: "Swira: Bugs", jql: "type = Bug"))
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body["favourite"]?.boolValue == true)
+    }
+
     // MARK: - Reference data
 
     @Test("Projects come from the flat legacy list, paginated and filtered locally")

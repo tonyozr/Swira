@@ -128,6 +128,22 @@ When the network fails and a cached copy exists, it is returned with `isStale ==
 throwing — but HTTP errors such as `401` are never masked this way, so revoked credentials still
 surface. Mutations invalidate every cached filter response.
 
+## swira-web
+
+Serves the browser client on localhost:
+
+```powershell
+swift run swira-web                       # http://127.0.0.1:8787/
+swift run swira-web --port 9000
+swift run swira-web --socket /tmp/swira.sock   # Unix domain socket instead of TCP
+```
+
+`--socket` binds a Unix domain socket at the given path instead of a TCP port (`--port` is
+ignored when it's set), for callers that front the client with their own reverse proxy or
+sandbox rather than exposing a loopback port. Works on Windows too (`AF_UNIX` support has
+shipped there since the Windows 10 1803 SDK), not just macOS/Linux. A stale socket file left
+over from a previous run is replaced automatically.
+
 ## swira-probe
 
 A plain CLI for exercising the core against a real site:
