@@ -1,0 +1,17 @@
+{
+  "self": "https://example.atlassian.net/rest/api/3/filter/search?startAt=2&maxResults=2",
+  "maxResults": 2,
+  "startAt": 2,
+  "total": 3,
+  "isLast": true,
+  "values": [
+    {
+      "id": "10002",
+      "name": "Recently updated",
+      "jql": "updated >= -7d",
+      "favourite": false,
+      "sharePermissions": [],
+      "subscriptions": []
+    }
+  ]
+}

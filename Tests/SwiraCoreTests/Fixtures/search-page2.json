@@ -1,0 +1,17 @@
+{
+  "isLast": true,
+  "issues": [
+    {
+      "id": "10003",
+      "key": "SWIRA-3",
+      "fields": {
+        "summary": "Ship the CLI",
+        "status": {
+          "name": "Done",
+          "statusCategory": { "key": "done", "name": "Done" }
+        },
+        "issuetype": { "name": "Task" }
+      }
+    }
+  ]
+}

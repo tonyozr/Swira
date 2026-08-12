@@ -1,0 +1,25 @@
+{
+  "self": "https://example.atlassian.net/rest/api/3/filter/search?startAt=0&maxResults=2",
+  "maxResults": 2,
+  "startAt": 0,
+  "total": 3,
+  "isLast": false,
+  "values": [
+    {
+      "id": "10000",
+      "name": "Open bugs",
+      "jql": "type = Bug AND status != Done",
+      "favourite": true,
+      "sharePermissions": [{ "id": 10000, "type": "global" }],
+      "subscriptions": []
+    },
+    {
+      "id": "10001",
+      "name": "My work",
+      "jql": "assignee = currentUser()",
+      "favourite": false,
+      "sharePermissions": [],
+      "subscriptions": []
+    }
+  ]
+}

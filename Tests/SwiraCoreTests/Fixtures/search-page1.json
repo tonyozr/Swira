@@ -1,0 +1,41 @@
+{
+  "nextPageToken": "CAEaAggD",
+  "issues": [
+    {
+      "id": "10001",
+      "key": "SWIRA-1",
+      "fields": {
+        "summary": "Filter list does not refresh",
+        "status": {
+          "name": "In Progress",
+          "statusCategory": { "key": "indeterminate", "name": "In Progress" }
+        },
+        "issuetype": { "name": "Bug" },
+        "priority": { "name": "High" },
+        "project": { "key": "SWIRA", "name": "Swira" },
+        "assignee": {
+          "accountId": "5b10a2844c20165700ede21g",
+          "displayName": "Mia Krystof",
+          "active": true
+        },
+        "labels": ["ui", "regression"],
+        "updated": "2026-03-14T09:41:00.000+0000"
+      }
+    },
+    {
+      "id": "10002",
+      "key": "SWIRA-2",
+      "fields": {
+        "summary": "Add offline mode",
+        "status": {
+          "name": "To Do",
+          "statusCategory": { "key": "new", "name": "To Do" }
+        },
+        "issuetype": { "name": "Story" },
+        "assignee": null,
+        "labels": [],
+        "updated": "2026-03-10T18:02:33.000+0000"
+      }
+    }
+  ]
+}

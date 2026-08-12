@@ -1,0 +1,44 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Swira}",
+            "name": "Debug swira-probe",
+            "target": "swira-probe",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug swira-probe"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Swira}",
+            "name": "Release swira-probe",
+            "target": "swira-probe",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release swira-probe"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Swira}",
+            "name": "Debug swira-web",
+            "target": "swira-web",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug swira-web"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:Swira}",
+            "name": "Release swira-web",
+            "target": "swira-web",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release swira-web"
+        }
+    ]
+}

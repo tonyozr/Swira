@@ -1,0 +1,51 @@
+{
+  "self": "https://example.atlassian.net/rest/api/3/filter/10000",
+  "id": "10000",
+  "name": "Open bugs",
+  "description": "Everything still broken",
+  "owner": {
+    "accountId": "5b10a2844c20165700ede21g",
+    "displayName": "Mia Krystof",
+    "active": true
+  },
+  "jql": "project = SWIRA AND type = Bug AND status != Done",
+  "viewUrl": "https://example.atlassian.net/issues/?filter=10000",
+  "searchUrl": "https://example.atlassian.net/rest/api/3/search?jql=filter%3D10000",
+  "favourite": true,
+  "favouritedCount": 7,
+  "isWritable": true,
+  "sharePermissions": [
+    { "id": 10000, "type": "global" },
+    { "id": 10001, "type": "loggedin" },
+    {
+      "id": 10002,
+      "type": "project",
+      "project": { "id": "10100", "key": "SWIRA", "name": "Swira" },
+      "role": { "id": "10360", "name": "Developers" }
+    },
+    { "id": 10003, "type": "group", "group": { "name": "jira-users", "groupId": "276f955c" } },
+    {
+      "id": 10004,
+      "type": "user",
+      "user": { "accountId": "5b10a2844c20165700ede21g", "displayName": "Mia Krystof" }
+    },
+    { "id": 10005, "type": "project", "project": null },
+    { "id": 10006, "type": "somethingAtlassianAddedLater" }
+  ],
+  "editPermissions": [
+    { "id": 10007, "type": "group", "group": { "name": "jira-admins", "groupId": "99a1b2c3" } }
+  ],
+  "subscriptions": {
+    "size": 1,
+    "items": [
+      {
+        "id": 10000,
+        "user": {
+          "accountId": "5b10a2844c20165700ede21g",
+          "displayName": "Mia Krystof",
+          "active": true
+        }
+      }
+    ]
+  }
+}
