@@ -1240,12 +1240,21 @@ function openQueryPanel() {
   let jql = state.filter.jql || "";
   if (state.sortField) {
     const base = stripOrderBy(jql);
-    jql = `${base}${base ? " " : ""}ORDER BY ${state.sortField} ${state.sortDir.toUpperCase()}`;
+    // A base that's already multiline (the filter was saved with manual line breaks —
+    // `maybeAutoFormatJQL` never touches those) gets a newline ahead of `ORDER BY`, not glued
+    // onto the last condition's line with a bare space — that would read as one long run-on
+    // line no reformatting pass ever fixes, since the result already "has newlines" and so
+    // looks manually formatted from then on.
+    const separator = base.includes("\n") ? "\n" : " ";
+    jql = `${base}${base ? separator : ""}ORDER BY ${state.sortField} ${state.sortDir.toUpperCase()}`;
   }
   setEditorText(jql, null);
   $("query-errors").textContent = "";
   $("query-panel").classList.add("open");
   $("jql-editor").focus();
+  // The panel is positioned (not display:none), so the editor already has a real width to
+  // measure here even before .open's slide-down transition finishes.
+  maybeAutoFormatJQL();
 }
 
 function highlightPlain(segment) {
@@ -1351,6 +1360,24 @@ function offsetOfPosition(root, targetNode, targetOffset) {
     }
   })(root);
   return found !== null ? found : total;
+}
+
+/// The current selection's bounds, as canonical-text offsets into `editor` — or `null` when
+/// there's no selection, or it isn't entirely inside `editor` (a copy/cut spanning outside it,
+/// e.g. into the sidebar, is left to the browser's own handling rather than second-guessed
+/// here). Used by the `copy`/`cut` handlers below in place of the browser's own plain-text
+/// serialization of the selection, which silently drops a chip's content entirely — Chrome
+/// treats a `contenteditable="false"` island nested inside an editable host as empty rather
+/// than including its text when producing `text/plain`, so copying a query containing a
+/// `filter = <id>` reference would otherwise lose that whole condition.
+function selectedCanonicalRange(editor) {
+  const selection = window.getSelection();
+  if (!selection.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null;
+  const a = offsetOfPosition(editor, range.startContainer, range.startOffset);
+  const b = offsetOfPosition(editor, range.endContainer, range.endOffset);
+  return { start: Math.min(a, b), end: Math.max(a, b) };
 }
 
 /// The inverse of `offsetOfPosition`: places the DOM caret at a canonical character offset.
@@ -1509,8 +1536,51 @@ function setupChipDropTarget() {
     if (!raw) return;
     const filter = JSON.parse(raw);
     filterNamesById[filter.id] = filter.name;
-    insertFilterReference(filter.id);
+    insertFilterReference(filter.id, editorOffsetAtPoint(editor, event.clientX, event.clientY));
   };
+}
+
+/// The canonical text offset under a screen point, or `null` when the browser can't resolve one
+/// (no `caretRangeFromPoint`/`caretPositionFromPoint` support) or it lands outside the editor —
+/// callers fall back to their own default in that case.
+function editorOffsetAtPoint(editor, x, y) {
+  let node, offset;
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(x, y);
+    if (!range) return null;
+    node = range.startContainer;
+    offset = range.startOffset;
+  } else if (document.caretPositionFromPoint) {
+    const position = document.caretPositionFromPoint(x, y);
+    if (!position) return null;
+    node = position.offsetNode;
+    offset = position.offset;
+  } else {
+    return null;
+  }
+  if (!editor.contains(node)) return null;
+
+  // caretRangeFromPoint/caretPositionFromPoint hit-test the literal nearest text position and,
+  // unlike a real click, don't respect contenteditable="false" — a drop landing visually over a
+  // chip can resolve to a position *inside* its rendered label ("🔗 Swira: Gen1 ▾"). A chip is
+  // atomic everywhere else in this file (see setCaretOffset's own "cannot land inside" handling
+  // just below), and offsetOfPosition only knows how to place a caret next to one as a whole —
+  // handed a node from inside its label instead, it sums that label's own rendered text length
+  // rather than the chip's five-or-so-character canonical `filter = <id>`, landing the drop at a
+  // bogus offset that then splices the new condition into the middle of the existing one's
+  // characters, breaking it. Snap to just before or after the chip first, by whichever half of
+  // it the point falls in.
+  const chip = node.nodeType === Node.ELEMENT_NODE && node.classList?.contains("filter-chip")
+    ? node
+    : node.parentElement?.closest(".filter-chip");
+  if (chip) {
+    const rect = chip.getBoundingClientRect();
+    const before = x < rect.left + rect.width / 2;
+    const index = Array.prototype.indexOf.call(chip.parentNode.childNodes, chip);
+    return offsetOfPosition(editor, chip.parentNode, before ? index : index + 1);
+  }
+
+  return offsetOfPosition(editor, node, offset);
 }
 
 /// Splits `jql` into the conditions and a trailing `ORDER BY ...`, if any — the new condition
@@ -1538,28 +1608,378 @@ function topLevelConnectives(jql) {
   return found;
 }
 
-/// Dropping a filter reference appends it as a new top-level condition, joined the way the
-/// existing conditions already agree with each other — `OR` if any of them is already an `OR`,
-/// `AND` otherwise — rather than always `AND`, which would silently change an `OR`-based
-/// query's meaning. No connective at all when there's nothing to join yet. The condition always
-/// lands right before `ORDER BY`, regardless of where the drop happened, so it never ends up
-/// split across the sort clause.
-function insertFilterReference(id) {
-  const editor = $("jql-editor");
-  const { base, orderBy } = splitOrderBy(canonicalText(editor));
-  const condition = `filter = ${id}`;
-  let newBase;
-  if (!base) {
-    newBase = condition;
-  } else {
-    const connective = topLevelConnectives(base).includes("OR") ? "OR" : "AND";
-    newBase = `${base} ${connective} ${condition}`;
+/// The innermost parenthesized group `at` sits inside, as a `[start, end)` span of `base` — the
+/// whole of `base` when `at` isn't inside any parens. Used to scope connective-agreement
+/// (`topLevelConnectives`) to the group being inserted into, not the outermost query — a drop
+/// inside `(priority = High OR priority = Critical)` must join with `OR`, regardless of what
+/// connective the rest of the query outside that group happens to use.
+function enclosingGroupBounds(base, at) {
+  const opens = [];
+  for (let i = 0; i < at; i++) {
+    if (base[i] === "(") opens.push(i);
+    else if (base[i] === ")") opens.pop();
   }
-  const newText = orderBy ? `${newBase} ${orderBy}` : newBase;
+  if (!opens.length) return { start: 0, end: base.length };
+  const openIndex = opens[opens.length - 1];
+  let depth = 1;
+  let end = base.length;
+  for (let i = openIndex + 1; i < base.length; i++) {
+    if (base[i] === "(") depth++;
+    else if (base[i] === ")") { depth--; if (depth === 0) { end = i; break; } }
+  }
+  return { start: openIndex + 1, end };
+}
+
+/// True when nothing meaningful separates `at` from the nearest thing before it that already
+/// expects a fresh condition to follow — the very start of the query, an opening paren, or a
+/// dangling `AND`/`OR`/`NOT`. No connective belongs in front of the inserted condition when
+/// this holds: one immediately before it is already doing that job.
+function isBareBefore(base, at) {
+  let i = at;
+  while (i > 0 && /\s/.test(base[i - 1])) i--;
+  if (i === 0 || base[i - 1] === "(") return true;
+  return /\b(AND|OR|NOT)$/i.test(base.slice(0, i));
+}
+
+/// The mirror of `isBareBefore`, looking forward instead: true when nothing meaningful
+/// separates `at` from whatever already expects to follow a fresh condition — the very end of
+/// the query, a closing paren, or a connective the user already typed right after the drop
+/// point. No connective belongs *after* the inserted condition when this holds, for the same
+/// reason `isBareBefore` withholds one in front. Without this check, a drop landing right in
+/// front of an existing bare condition (e.g. one `isBareBefore` itself just inserted nothing in
+/// front of) would leave two conditions sitting side by side with nothing joining them — not
+/// merely a style nit, but invalid JQL.
+function isBareAfter(base, at) {
+  let i = at;
+  while (i < base.length && /\s/.test(base[i])) i++;
+  if (i === base.length || base[i] === ")") return true;
+  return /^(AND|OR|NOT)\b/i.test(base.slice(i));
+}
+
+/// Inserts a `filter = <id>` condition into the query, either at a specific canonical-text
+/// `offset` — a drag-and-drop landing point, resolved by `editorOffsetAtPoint` — or, when
+/// `offset` is `null`/unresolved, appended as a new top-level condition at the end. Either way
+/// the insertion point is clamped to land before a trailing `ORDER BY`, so a dropped reference
+/// never ends up split across the sort clause.
+///
+/// Any connective needed either side of the condition is decided the way the existing
+/// conditions *at that insertion point* already agree with each other — `OR` if the enclosing
+/// group (§`enclosingGroupBounds`) already joins with `OR`, `AND` otherwise — never a blind
+/// `AND` that would silently change an `OR`-based query's or group's meaning. Whichever side
+/// (`isBareBefore`/`isBareAfter`) already has one right there — the start/end of the query, a
+/// paren, or a connective the user already typed — gets no connective added on top of it; the
+/// other side gets one, so the inserted condition never ends up sitting next to its neighbour
+/// with nothing joining them.
+///
+/// This is a heuristic over the plain text, like the rest of this editor's JQL handling (see the
+/// autocomplete comment above `detectCompletionContext`) — it reasons about the drop point's
+/// immediate surroundings, not full JQL precedence, so a drop wedged mid-clause in unusual spots
+/// (e.g. between a dangling `NOT` and the parenthesized group it negates) isn't guaranteed to
+/// come out perfectly. The common drop points — end of the query, an empty group, right after a
+/// connective the user just typed, right in front of an existing condition — are exactly the
+/// ones it gets right.
+function insertFilterReference(id, offset) {
+  const editor = $("jql-editor");
+  const text = canonicalText(editor);
+  const condition = `filter = ${id}`;
+
+  const orderByMatch = text.match(/\s*(\border\s+by\s+.+)$/i);
+  const baseEnd = orderByMatch ? orderByMatch.index : text.length;
+  const base = text.slice(0, baseEnd);
+  const at = offset == null ? baseEnd : Math.max(0, Math.min(offset, baseEnd));
+
+  const bareBefore = isBareBefore(base, at);
+  const bareAfter = isBareAfter(base, at);
+  let prefix = "";
+  let suffix = "";
+  if (!bareBefore || !bareAfter) {
+    const { start, end } = enclosingGroupBounds(base, at);
+    const connective = topLevelConnectives(base.slice(start, end)).includes("OR") ? "OR" : "AND";
+    if (!bareBefore) prefix = `${connective} `;
+    if (!bareAfter) suffix = ` ${connective}`;
+  }
+  const piece = `${prefix}${condition}${suffix}`;
+
+  const before = text.slice(0, at);
+  const after = text.slice(at);
+  // Exactly one separating space where one's needed, without doubling one that's already
+  // there, and without one at all right against an opening/closing paren.
+  const sep1 = before && !/[\s(]$/.test(before) ? " " : "";
+  const sep2 = after && !/^[\s)]/.test(after) ? " " : "";
+  let newText = `${before}${sep1}${piece}${sep2}${after}`;
+
+  // The caret must land strictly past the inserted `filter = <id>` clause's own match boundary
+  // — buildEditorHTML treats a caret still touching a match as "being typed" and leaves it as
+  // plain text rather than committing it to a chip (the same rule that keeps an id being typed
+  // from snapping into a pill mid-keystroke). A trailing connective (`suffix`) already provides
+  // that room. Otherwise, landing one character further — into whatever already follows (a
+  // separating space, or straight into a `)` with none) — clears the boundary without adding
+  // anything to the text. Only when there's truly nothing at all after the drop point (the very
+  // end of the query) does a space need inserting, purely to give the caret somewhere to go.
+  const matchEnd = before.length + sep1.length + prefix.length + condition.length;
+  let caret;
+  if (suffix) {
+    caret = matchEnd + suffix.length;
+  } else if (after === "") {
+    newText += " ";
+    caret = newText.length;
+  } else {
+    caret = matchEnd + 1;
+  }
+
   editor.focus();
-  // A trailing space commits the reference to a chip immediately, rather than leaving it as
-  // plain text until the user types past it.
-  setEditorText(`${newText} `, `${newBase} `.length);
+  setEditorText(newText, caret);
+}
+
+/* ----- Multiline JQL formatting ----- */
+//
+// A query that wouldn't fit the editor's width as one line is reformatted into an indented
+// multiline layout instead of just soft-wrapping mid-token — breaking at top-level AND/OR onto
+// their own lines and recursing into parenthesized groups only as deep as actually needed, so a
+// nested clause that already fits stays inline even inside one that doesn't. This never touches
+// a query the user has already broken into lines themselves; auto-formatting only ever turns a
+// too-wide single line into multiple, never reflows existing manual line breaks.
+
+const JQL_INDENT_UNIT = 2;
+// A short list of conditions (or IN-values) reads fine on one line even once the query around
+// it has gone multiline — e.g. `(priority = High OR priority = Critical)` — so it's kept inline
+// whenever it fits, same as any other clause. Once a group holds more pieces than this, though,
+// it's forced onto its own multiple lines even if it would technically still fit the width: a
+// five-way OR crammed onto one line is harder to scan than one that's merely a little wide, the
+// same tradeoff most SQL formatters make for long clause lists and IN-lists alike.
+const JQL_INLINE_LIMIT = 3;
+
+/// The pixel width of one monospace character in the editor's font, measured once via canvas
+/// and cached — the editor's own font is set in CSS (`#jql-wrap`), so this must track it.
+let cachedJQLCharWidth = null;
+function jqlCharWidth() {
+  if (cachedJQLCharWidth) return cachedJQLCharWidth;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  context.font = "13px ui-monospace, Consolas, monospace";
+  cachedJQLCharWidth = context.measureText("M").width || 7.8;
+  return cachedJQLCharWidth;
+}
+
+/// How many characters currently fit across the editor's own width — the "print width" the
+/// formatter wraps to. Recomputed on demand rather than cached, since the panel/window can be
+/// resized between edits.
+function jqlColumnBudget() {
+  const editor = $("jql-editor");
+  const style = getComputedStyle(editor);
+  const available = editor.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+  return Math.max(20, Math.floor(available / jqlCharWidth()));
+}
+
+/// Splits `expr` into pieces joined by top-level `AND`/`OR` — mirrors `topLevelConnectives`'s
+/// paren-depth tracking, but returns the actual substrings too, which is what the formatter
+/// below needs to lay each one out on its own line.
+function splitTopLevelJQL(expr) {
+  const parts = [];
+  const connectives = [];
+  let depth = 0;
+  let start = 0;
+  let i = 0;
+  while (i < expr.length) {
+    const ch = expr[i];
+    if (ch === "(") { depth++; i++; continue; }
+    if (ch === ")") { depth--; i++; continue; }
+    if (depth === 0) {
+      const match = /^(AND|OR)\b/i.exec(expr.slice(i));
+      if (match && /\s/.test(expr[i - 1] || " ")) {
+        parts.push(expr.slice(start, i).trim());
+        connectives.push(match[1].toUpperCase());
+        i += match[0].length;
+        start = i;
+        continue;
+      }
+    }
+    i++;
+  }
+  parts.push(expr.slice(start).trim());
+  return { parts, connectives };
+}
+
+/// True when `text` is one parenthesized group spanning it entirely — not merely a leaf
+/// condition that happens to contain parens, like `status in (Open, "In Progress")`.
+function isParenWrapped(text) {
+  if (!text.startsWith("(") || !text.endsWith(")")) return false;
+  let depth = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")") {
+      depth--;
+      if (depth === 0) return i === text.length - 1;
+    }
+  }
+  return false;
+}
+
+/// The `(head, inner)` split of `text`'s *trailing* parenthesized group — the `(...)` that ends
+/// the string, however much comes before it — or `null` if `text` doesn't end with one. Unlike
+/// `isParenWrapped`, `head` doesn't have to be empty: this is what finds the value list on a
+/// leaf condition like `priority in (High, Highest)`, where the group is only part of the
+/// clause, not the whole of it.
+function trailingParenGroup(text) {
+  if (!text.endsWith(")")) return null;
+  let depth = 0;
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (text[i] === ")") depth++;
+    else if (text[i] === "(") {
+      depth--;
+      if (depth === 0) return { head: text.slice(0, i), inner: text.slice(i + 1, -1) };
+    }
+  }
+  return null;
+}
+
+/// Splits a comma-separated list on its top-level commas — parens and quoted strings are
+/// opaque, mirroring `splitTopLevelJQL`'s treatment of `AND`/`OR`. Used for an `IN (...)`
+/// clause's value list, so `field in ("a, b", c)` doesn't split inside the quoted value.
+function splitTopLevelCommaList(text) {
+  const parts = [];
+  let depth = 0;
+  let quote = null;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\") { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue; }
+    else if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "," && depth === 0) {
+      parts.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start).trim());
+  return parts;
+}
+
+/// True when `text`, laid out as one line however wide, would still read as too dense to be
+/// worth it — some clause list *anywhere* in it (top-level, inside a parenthesized group, or an
+/// `IN`-list's values), not just at `text`'s own top level, holds more than `JQL_INLINE_LIMIT`
+/// items. `formatJQLExpression`'s inline/exploded decision for a list needs this, not just its
+/// own item count: a query with only 3 top-level conditions still needs to explode if one of
+/// those 3 is itself a 5-way `OR` group, even though the flat text of all 3 together might
+/// easily fit `columns` and 3 doesn't exceed the limit on its own.
+function hasOversizedList(text) {
+  const trimmed = text.trim();
+  if (isParenWrapped(trimmed)) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (!inner) return false;
+    const { parts } = splitTopLevelJQL(inner);
+    return parts.length > JQL_INLINE_LIMIT || parts.some(hasOversizedList);
+  }
+  const { parts } = splitTopLevelJQL(trimmed);
+  if (parts.length > 1) {
+    return parts.length > JQL_INLINE_LIMIT || parts.some(hasOversizedList);
+  }
+  const group = trailingParenGroup(trimmed);
+  if (group && /\b(?:not\s+)?in\s*$/i.test(group.head)) {
+    return splitTopLevelCommaList(group.inner).length > JQL_INLINE_LIMIT;
+  }
+  return false;
+}
+
+/// Lays out an `IN (...)`/`NOT IN (...)` clause's value list as `head(...)`: inline if it holds
+/// at most `JQL_INLINE_LIMIT` values and fits `columns`, otherwise one value per line indented
+/// under `head`'s own line, comma-terminated the way a long `IN`-list reads in most SQL
+/// formatters.
+function formatParenList(head, values, indent, columns) {
+  if (!values.length) return `${head}()`;
+  const oneLine = `${head}(${values.join(", ")})`;
+  if (values.length <= JQL_INLINE_LIMIT && indent + oneLine.length <= columns) return oneLine;
+  const innerIndent = indent + JQL_INDENT_UNIT;
+  const body = values.join(`,\n${" ".repeat(innerIndent)}`);
+  return `${head}(\n${" ".repeat(innerIndent)}${body}\n${" ".repeat(indent)})`;
+}
+
+/// Pretty-prints one JQL expression (no `ORDER BY`) to fit within `columns`, breaking at
+/// top-level `AND`/`OR` onto their own lines indented by `indent` and recursing into
+/// parenthesized groups and `IN`-lists only as deep as actually needed — a clause that already
+/// fits, and isn't too long a list to read comfortably inline (`JQL_INLINE_LIMIT`), stays inline
+/// even nested inside one that doesn't. `NOT`/`IN` are never treated as connectives to break on
+/// (`splitTopLevelJQL` only splits `AND`/`OR`), so they always stay on the same line as the
+/// condition they belong to.
+function formatJQLExpression(text, indent, columns) {
+  const trimmed = text.trim();
+
+  if (isParenWrapped(trimmed)) {
+    const inner = trimmed.slice(1, -1).trim();
+    if (!inner) return "()";
+    const { parts } = splitTopLevelJQL(inner);
+    const oneLine = `(${inner})`;
+    const fitsInline = parts.length <= JQL_INLINE_LIMIT && indent + oneLine.length <= columns
+      && !parts.some(hasOversizedList);
+    if (fitsInline) return oneLine;
+    const innerIndent = indent + JQL_INDENT_UNIT;
+    const formattedInner = formatJQLExpression(inner, innerIndent, columns);
+    return `(\n${" ".repeat(innerIndent)}${formattedInner}\n${" ".repeat(indent)})`;
+  }
+
+  const { parts, connectives } = splitTopLevelJQL(trimmed);
+  if (parts.length > 1) {
+    const oneLine = parts.map((part, i) => (i === 0 ? part : `${connectives[i - 1]} ${part}`)).join(" ");
+    const fitsInline = parts.length <= JQL_INLINE_LIMIT && indent + oneLine.length <= columns
+      && !parts.some(hasOversizedList);
+    if (fitsInline) return oneLine;
+    return parts
+      .map((part, i) => {
+        const piece = formatJQLExpression(part, indent, columns);
+        return i === 0 ? piece : `${connectives[i - 1]} ${piece}`;
+      })
+      .join(`\n${" ".repeat(indent)}`);
+  }
+
+  // A leaf condition — the last thing left to check is whether it's an `IN (...)`/`NOT IN
+  // (...)` clause with a value list long enough to lay out one value per line, e.g.
+  // `priority in (High, Highest, Critical, Blocker)`. Anything else (a plain comparison, a
+  // function call, a value list itself already short) is returned as-is: it's a single unit
+  // that stays on one line no matter what surrounds it.
+  const group = trailingParenGroup(trimmed);
+  if (group && /\b(?:not\s+)?in\s*$/i.test(group.head)) {
+    const values = splitTopLevelCommaList(group.inner);
+    if (values.length) return formatParenList(group.head, values, indent, columns);
+  }
+  return trimmed;
+}
+
+/// Reformats `jql` as indented multiline if, laid out flat as one line, it wouldn't fit
+/// `columns` characters *or* some clause list is long enough that `formatJQLExpression` breaks
+/// it up on its own account (`JQL_INLINE_LIMIT`) — otherwise collapses it back to one flat line
+/// unchanged. `formatJQLExpression` always runs, rather than only once a width check fails, so
+/// that second trigger applies even to a query that would otherwise fit comfortably. A trailing
+/// `ORDER BY` always lands on its own line once anything else goes multiline, and is never
+/// itself split.
+function formatJQLIfNeeded(jql, columns) {
+  const { base, orderBy } = splitOrderBy(jql);
+  if (!base) return orderBy;
+  const flatBase = base.replace(/\s+/g, " ").trim();
+  const formattedBase = formatJQLExpression(flatBase, 0, columns);
+  const combinedFits = !formattedBase.includes("\n")
+    && (orderBy ? formattedBase.length + 1 + orderBy.length : formattedBase.length) <= columns;
+  if (combinedFits) return orderBy ? `${formattedBase} ${orderBy}` : formattedBase;
+  return orderBy ? `${formattedBase}\n${orderBy}` : formattedBase;
+}
+
+/// Auto-formats the editor's current text into multiline once it no longer fits on one line.
+/// Only acts on text that's still a single physical line — a query the user has already broken
+/// into lines by hand is left exactly as they wrote it, never collapsed and reflowed against
+/// their own formatting. Returns whether it changed anything, so callers that also want to
+/// re-render on a no-op (e.g. to commit chips on blur) know whether this already did that.
+function maybeAutoFormatJQL() {
+  const editor = $("jql-editor");
+  const text = canonicalText(editor);
+  if (text.includes("\n")) return false;
+  const formatted = formatJQLIfNeeded(text, jqlColumnBudget());
+  if (formatted === text) return false;
+  setEditorText(formatted, null);
+  return true;
 }
 
 /* ----- Wiring: typing, Enter, paste, blur, clicking a chip ----- */
@@ -1751,7 +2171,9 @@ function setupEditorEvents() {
     scheduleAutocomplete();
   });
   editor.addEventListener("blur", () => {
-    renderEditor(null);
+    // maybeAutoFormatJQL already re-renders (via setEditorText) when it actually reformats;
+    // only fall back to a plain re-render for the ordinary case where it left the text alone.
+    if (!maybeAutoFormatJQL()) renderEditor(null);
     setTimeout(closeAutocomplete, 150); // after any option's mousedown has had its say
   });
   editor.addEventListener("keydown", (event) => {
@@ -1791,6 +2213,24 @@ function setupEditorEvents() {
     event.preventDefault();
     const text = (event.clipboardData || window.clipboardData).getData("text/plain");
     insertPlainTextAtCaret(text);
+    // A pasted one-liner that overflows is exactly the case worth reformatting immediately,
+    // rather than making the user click away first to see it laid out sensibly.
+    maybeAutoFormatJQL();
+  });
+  editor.addEventListener("copy", (event) => {
+    const bounds = selectedCanonicalRange(editor);
+    if (!bounds) return; // selection isn't (fully) inside the editor — let the browser handle it
+    event.clipboardData.setData("text/plain", canonicalText(editor).slice(bounds.start, bounds.end));
+    event.preventDefault();
+  });
+  editor.addEventListener("cut", (event) => {
+    const bounds = selectedCanonicalRange(editor);
+    if (!bounds) return;
+    const full = canonicalText(editor);
+    event.clipboardData.setData("text/plain", full.slice(bounds.start, bounds.end));
+    event.preventDefault();
+    editor.focus();
+    setEditorText(full.slice(0, bounds.start) + full.slice(bounds.end), bounds.start);
   });
   editor.addEventListener("click", (event) => {
     // For a `contenteditable="false"` child nested in a `contenteditable="true"` host,

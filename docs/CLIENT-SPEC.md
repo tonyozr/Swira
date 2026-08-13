@@ -180,6 +180,27 @@ modes**, with a persistent per-filter choice. A toolbar switcher toggles between
   action pair.
 - The JQL is displayed **formatted, with basic syntax highlighting** (keywords, fields,
   operators, strings distinguishable).
+- **A query that doesn't fit the editor's width as one line, or holds a clause list too long to
+  read comfortably inline even when it would technically fit, MUST be laid out multiline**
+  instead of merely soft-wrapping mid-token:
+  - Break at top-level `AND`/`OR` onto their own indented lines. `NOT` and `IN`/`NOT IN` are
+    never connectives to break on — they always stay on the same line as the condition they
+    belong to (`status NOT IN (Done, Closed)`, `NOT (priority = Low)` are each one line).
+  - A parenthesized group is recursed into only as deep as needed: a nested clause that already
+    reads fine inline stays inline even inside an outer clause that doesn't.
+  - **"Reads fine inline" is a threshold on item count, not just width.** A clause list — the
+    top-level conditions, a parenthesized group's conditions, or an `IN`-list's values — of three
+    items or fewer stays on one line whenever it fits; once it holds more than three, it MUST
+    break one item per line even if the flat text would still technically fit the width. A
+    five-way `OR` crammed onto one line is harder to scan than one that's merely a little wide,
+    the same tradeoff most SQL formatters make for long clause lists.
+  - A long `IN`-list's values are laid out the same way, one value per line, comma-terminated,
+    once there are more than three: `priority IN (\n  Lowest,\n  Low,\n  ...\n)`.
+  - A trailing `ORDER BY` always lands on its own line once anything else goes multiline, and is
+    never itself split.
+  - This reformatting MUST NOT touch a query the user has already broken into lines by hand — it
+    only ever turns lines that are still a single physical line into multiple, never reflows line
+    breaks the user chose themselves.
 - Apply validates through `JQLService.validate` first; validation errors are shown inline in
   the panel and block saving. Saving uses `FiltersService.update`.
 - The editor SHOULD offer **completion suggestions** while typing, backed by `JQLService`:
@@ -213,20 +234,36 @@ modes**, with a persistent per-filter choice. A toolbar switcher toggles between
   the filter it points to, not only a way to change what it points to.
 - **Dragging a filter from the sidebar into the query editor** MUST insert a `filter = <id>`
   reference for it, which then renders as the same chip described above. This is the
-  sidebar-to-editor path the chip mechanism exists to support. The reference is inserted as a
-  new top-level condition, joined to whatever conditions already exist rather than always
-  appended blindly:
-  - No connective at all if the query is currently empty — this is the first condition.
-  - `OR` if any of the query's existing **top-level** conditions is already joined by `OR`
-    (a connective inside a parenthesized group doesn't count — it joins that group's own
-    sub-conditions, not the outer query).
-  - `AND` otherwise (including the common case of a single existing condition, or several
-    already joined by `AND`).
-
-  Always choosing `AND` regardless of the existing connectives would silently change the
-  meaning of an `OR`-based query. The condition is inserted immediately before a trailing
-  `ORDER BY` clause if one is present, never after it, regardless of where in the editor the
-  drop itself occurred — a dropped reference must never end up split across the sort clause.
+  sidebar-to-editor path the chip mechanism exists to support. Where and how it's joined
+  depends on where in the query the drop actually landed, not just appended blindly to the end:
+  - **The insertion point is the drop location itself.** Dropping inside a parenthesized group
+    inserts the condition into that group, not at the outermost level of the query — e.g.
+    dropping between `priority = High OR ` and the closing paren of
+    `(priority = High OR priority = Critical)` joins the new condition into that group with
+    `OR`, regardless of what connective the rest of the query outside the group uses. Dropping
+    outside any group inserts it as a new top-level condition. If the drop point can't be
+    resolved to a location in the text at all, it falls back to appending at the end, as if
+    dropped there. A drop landing visually on top of an existing chip's rendered label MUST
+    resolve to a position just before or after that chip as a whole — whichever half of it the
+    drop is closer to — never to a position *inside* the chip's own text, which would splice the
+    new condition into the middle of the existing `filter = <id>` clause's characters and break
+    it (it would no longer render as a chip, nor be valid JQL).
+  - **Any connective needed on either side of the inserted condition** is decided by how the
+    conditions already at that insertion point — the enclosing group, or the top level if the
+    drop wasn't inside any group — agree with each other: `OR` if any of them is already joined
+    by `OR`, `AND` otherwise (including the common case of one existing condition, or several
+    already joined by `AND`). Always choosing `AND` regardless of the existing connectives would
+    silently change the meaning of an `OR`-based query or group.
+  - **No connective on a side that already has one right there:** the start/end of the query (or
+    group), a paren, or an `AND`/`OR`/`NOT` the user already typed immediately before or after
+    the drop point. This is checked on *both* sides independently — piling a second connective
+    in front of one that's already doing the job would produce invalid JQL
+    (`AND AND filter = <id>`), and so would leaving neither side connected at all (dropping right
+    in front of an existing condition, with a connective already satisfied on the left, still
+    needs one inserted on the right to join the new condition to what follows it — otherwise two
+    conditions end up sitting side by side with nothing joining them, equally invalid).
+  - Regardless of where the drop occurred, the condition never ends up after a trailing
+    `ORDER BY` clause — it always lands immediately before it.
 - Implementations MAY render the chip inline within the query text (true block editing) or
   as an adjacent element associated with the clause (e.g. a strip beneath the text input) —
   whichever a given platform's text-editing primitives support without fighting them. Both
