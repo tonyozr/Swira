@@ -35,7 +35,8 @@ let package = Package(
                 "SwiraCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
-            ]
+            ],
+            resources: [.embedInCode("Resources/index.html")]
         ),
         .testTarget(
             name: "SwiraCoreTests",
