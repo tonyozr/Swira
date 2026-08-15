@@ -170,3 +170,16 @@ The test suite is self-contained and runs offline. One suite — `Live Jira` —
 read-only integration tests against a real site, and is skipped automatically unless the
 `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` environment variables are set. It never creates,
 modifies, or deletes anything on the site.
+
+A `Makefile` wraps the common verbs so they work the same way on macOS, Windows, and Linux:
+
+```
+make build                  # swift build
+make test                   # swift test
+make test FILTER=Foo        # swift test --filter Foo
+make run-probe ARGS="whoami"
+make run-web PORT=8787      # swift run swira-web
+make stop-web                # stop whatever is listening on PORT (default 8787)
+make clean                  # swift package clean
+make help
+```
