@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pins the same Swift toolchain version across all three runners, rather than trusting
+      # whatever happens to ship on each image (macOS runners bundle a Swift version tied to
+      # their Xcode image; Linux/Windows runners have none at all).
+      - name: Set up Swift
+        uses: SwiftyLab/setup-swift@v1
+        with:
+          swift-version: "6.1"
+
+      - name: swift --version
+        run: swift --version
+
+      # `make` isn't part of the Windows runner image (unlike Linux/macOS, where it's already
+      # on PATH) — see the Makefile's own notes on Windows lacking POSIX tooling by default.
+      - name: Install make (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make --no-progress -y
+
+      # `make build`/`make test` cover everything buildable on the current platform — on
+      # Windows that includes Apps/SwiraWin via dotnet, which is why this is one job per OS
+      # rather than a Swift-only matrix plus a separate Windows-only job.
+      - name: Build
+        run: make build
+
+      - name: Test
+        run: make test
