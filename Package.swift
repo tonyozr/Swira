@@ -10,6 +10,9 @@ let package = Package(
         .library(name: "SwiraCore", targets: ["SwiraCore"]),
         .executable(name: "swira-probe", targets: ["swira-probe"]),
         .executable(name: "swira-web", targets: ["swira-web"]),
+        // A flat C ABI over SwiraCore, built as a DLL on Windows. This is what SwiraWin
+        // (Apps/SwiraWin, C#/WinUI) P/Invokes directly — see Sources/SwiraABI/SwiraABI.swift.
+        .library(name: "SwiraABI", type: .dynamic, targets: ["SwiraABI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -37,6 +40,10 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
             ],
             resources: [.embedInCode("Resources/index.html")]
+        ),
+        .target(
+            name: "SwiraABI",
+            dependencies: ["SwiraCore"]
         ),
         .testTarget(
             name: "SwiraCoreTests",
