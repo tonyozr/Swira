@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>SwiraWin</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <!-- WinUI's own default control styles are resource-indexed (ms-resource: lookups) and need
+         a real resources.pri even though this app isn't packaged as MSIX — resources.pri
+         generation itself shells out to the Windows SDK's MakePri.exe directly, so it works
+         without Visual Studio. Only the MSIX-payload-assembly steps need the missing
+         VS-provided AppxPackage task assemblies; those are no-op'd in Directory.Build.targets. -->
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>SwiraWin</AssemblyName>
+    <!-- Unpackaged desktop app: no MSIX identity, no AppxManifest. -->
+    <DefaultLanguage>en-US</DefaultLanguage>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.250108002" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.1742" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <!-- SwiraABI.dll (the Swift C-ABI over SwiraCore) is built via SwiftPM's "product" build mode
+       from the repo root (see ../../.build/<config>/SwiraABI.dll). Copying it next to this app's
+       own output is how the P/Invoke layer in Native/SwiraCoreBridge.cs finds it — see
+       docs/CLIENT-SPEC.md and CLAUDE.md for why the core stays Swift and this project is only
+       WinUI's XAML surface. -->
+  <ItemGroup>
+    <None Include="..\..\.build\debug\SwiraABI.dll" Condition="Exists('..\..\.build\debug\SwiraABI.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>SwiraABI.dll</Link>
+    </None>
+    <None Include="..\..\.build\release\SwiraABI.dll" Condition="Exists('..\..\.build\release\SwiraABI.dll') and !Exists('..\..\.build\debug\SwiraABI.dll')">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>SwiraABI.dll</Link>
+    </None>
+  </ItemGroup>
+
+</Project>

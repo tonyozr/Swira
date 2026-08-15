@@ -1,0 +1,85 @@
+<Project>
+  <!--
+    This dev machine has only the .NET SDK, no Visual Studio — so the VS-provided AppxPackage
+    MSBuild task assemblies (Microsoft.Build.Packaging.Pri.Tasks.dll, Microsoft.Build.AppxPackage.dll)
+    that Microsoft.WindowsAppSDK's imported targets rely on for MSIX-packaging steps don't exist
+    on disk. None of that packaging machinery is needed for an unpackaged app
+    (WindowsPackageType=None in SwiraWin.csproj) — but several of its targets run unconditionally
+    as part of an ordinary Build regardless, so they're overridden below to either no-op or
+    (for the one genuinely necessary piece, resources.pri) be reimplemented directly against the
+    Windows SDK's makepri.exe, bypassing the missing wrapper assemblies entirely.
+
+    Imported last (Directory.Build.targets always resolves after NuGet package targets), so these
+    definitions win.
+  -->
+
+  <!-- CopyLocalFilesOutputGroup: an MSIX-payload output-group mechanism; nothing here consumes
+       an MSIX layout. -->
+  <Target Name="CopyLocalFilesOutputGroup" Returns="@(CopyLocalFilesOutputGroupOutput)">
+    <ItemGroup>
+      <CopyLocalFilesOutputGroupOutput Include="@(ReferenceCopyLocalPaths)">
+        <TargetPath>%(ReferenceCopyLocalPaths.DestinationSubDirectory)%(ReferenceCopyLocalPaths.Filename)%(ReferenceCopyLocalPaths.Extension)</TargetPath>
+      </CopyLocalFilesOutputGroupOutput>
+    </ItemGroup>
+  </Target>
+
+  <!-- PrepareForRunDependsOn (imported target) unconditionally depends on GetMrtPackagingOutputs
+       — another MSIX-payload assembly step. -->
+  <Target Name="GetMrtPackagingOutputs" Returns="@(_PackagingOutputsExpanded)" />
+
+  <!-- Same story: PrepareForRunDependsOn also chains through _GetDefaultResourceLanguage. This
+       app has one language (en-US, DefaultLanguage in SwiraWin.csproj). -->
+  <Target Name="_GetDefaultResourceLanguage">
+    <PropertyGroup>
+      <DefaultResourceLanguage Condition="'$(DefaultResourceLanguage)' == ''">$(DefaultLanguage)</DefaultResourceLanguage>
+    </PropertyGroup>
+  </Target>
+
+  <!-- AddPriPayloadFilesToCopyToOutputDirectoryItems (runs whenever AppxGeneratePriEnabled isn't
+       explicitly false, which is the default) expands any .pri files carried by referenced
+       libraries for extra asset payload — again via the missing ExpandPriContent task. This
+       project's only references are the WindowsAppSDK managed assemblies, which don't need that;
+       our own resources.pri is produced separately by SwiraGenerateResourcesPri below. -->
+  <Target Name="AddPriPayloadFilesToCopyToOutputDirectoryItems" />
+
+  <!-- _GetPriFilesFromPayload (ShouldComputeInputPris defaults true for WinExe/Exe outputs) is
+       part of the same SDK-side PRI-merging pipeline this project bypasses entirely in favor of
+       SwiraGenerateResourcesPri below. -->
+  <Target Name="_GetPriFilesFromPayload" />
+
+  <!-- _GenerateProjectPriFile (also chained from PrepareForRunDependsOn, alongside
+       GetMrtPackagingOutputs and _GetDefaultResourceLanguage above) is the umbrella target for
+       the SDK's whole PRI-config/generation pipeline — every one of its DependsOnTargets leaves
+       (config-file generation, portable-library PRI merging, etc.) needs the same missing task
+       assembly. SwiraGenerateResourcesPri below produces the actual resources.pri directly
+       against makepri.exe, so the umbrella is a no-op here rather than disabled leaf by leaf. -->
+  <Target Name="_GenerateProjectPriFile" />
+
+  <!--
+    resources.pri IS genuinely needed, unlike the packaging steps above: WinUI's own default
+    control styles are resource-indexed (ms-resource: lookups via the WinRT ResourceManager), and
+    without a resources.pri present next to the exe, the runtime crashes inside
+    Microsoft.UI.Xaml.dll on startup (0xC000027B, a stowed WinRT exception) before a window ever
+    appears. The SDK's own generation path (_GenerateProjectPriFileCore) needs the same missing
+    assembly, so this calls the real Windows SDK tool, makepri.exe, directly instead — it's what
+    that path would have shelled out to anyway underneath the missing C# task wrapper.
+  -->
+  <PropertyGroup>
+    <_WindowsKitsBinRoot>$(MSBuildProgramFiles32)\Windows Kits\10\bin</_WindowsKitsBinRoot>
+    <_MakePriExe Condition="'$(_MakePriExe)' == '' and Exists('$(_WindowsKitsBinRoot)\10.0.26100.0\x64\makepri.exe')">$(_WindowsKitsBinRoot)\10.0.26100.0\x64\makepri.exe</_MakePriExe>
+    <_MakePriExe Condition="'$(_MakePriExe)' == '' and Exists('$(_WindowsKitsBinRoot)\10.0.22621.0\x64\makepri.exe')">$(_WindowsKitsBinRoot)\10.0.22621.0\x64\makepri.exe</_MakePriExe>
+    <_MakePriExe Condition="'$(_MakePriExe)' == '' and Exists('$(_WindowsKitsBinRoot)\10.0.22000.0\x64\makepri.exe')">$(_WindowsKitsBinRoot)\10.0.22000.0\x64\makepri.exe</_MakePriExe>
+  </PropertyGroup>
+
+  <Target Name="SwiraGenerateResourcesPri"
+          AfterTargets="Build"
+          Condition="'$(_MakePriExe)' != ''"
+          Inputs="$(MSBuildProjectFullPath)"
+          Outputs="$(TargetDir)resources.pri">
+    <Error Condition="'$(_MakePriExe)' == ''"
+           Text="makepri.exe was not found under $(_WindowsKitsBinRoot) — add its version folder to the _MakePriExe fallback chain above." />
+    <Exec Condition="!Exists('$(IntermediateOutputPath)priconfig.xml')"
+          Command="&quot;$(_MakePriExe)&quot; createconfig /cf &quot;$(IntermediateOutputPath)priconfig.xml&quot; /dq en-US /pv 10.0 /o" />
+    <Exec Command="&quot;$(_MakePriExe)&quot; new /pr &quot;$(MSBuildProjectDirectory)&quot; /cf &quot;$(IntermediateOutputPath)priconfig.xml&quot; /of &quot;$(TargetDir)resources.pri&quot; /o" />
+  </Target>
+</Project>

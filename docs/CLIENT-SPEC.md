@@ -288,7 +288,7 @@ visually distinct. Clients MUST NOT present cached data as current.
 | macOS (AppKit) | Canonical. Sheet for the query editor, `WKWebView` for the issue pane. |
 | Terminal (SwiftTUI) | Same layout in cells: sidebar pane, list/table pane. Split view's right pane is a read-only render + "open in browser". |
 | GNUstep | Follows the macOS structure with GNUstep equivalents. |
-| Windows (WinUI) | Same structure; WebView2 for the issue pane. |
+| Windows (WinUI) | Same structure; WebView2 for the issue pane. Filter-reference chips (§3.3.1) render inline in the query editor's `RichEditBox`, matching the web client's look: a committed reference is literal text `🔗 <name>` with pill character formatting, its numeric id kept in the run (for round-tripping to `filter = <id>`) but painted invisible. |
 | Web | The application serves HTTP on localhost; the browser UI implements this same
   specification. The web client talks to the same core (via the serving process), not to
   Jira directly. |

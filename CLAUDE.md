@@ -10,11 +10,13 @@ swift test                          # offline, self-contained — must stay gree
 swift test --filter <SuiteOrTestName>
 ```
 
-A `Makefile` wraps these same verbs (`make build`, `make test`, `make test FILTER=<Name>`,
-`make run-probe ARGS="whoami"`, `make run-web PORT=8787`, `make stop-web`, `make clean`, `make
-help`) so the build is reachable the same way on every platform. **If SwiftPM is ever replaced or
-supplemented by another build system, keep it callable through these same `make` targets** —
-update the Makefile's recipes rather than teaching people a second, parallel set of commands.
+A `Makefile` wraps these same verbs (`make build`, `make build CONFIG=release`, `make test`,
+`make test FILTER=<Name>`, `make clean`, `make help`) so the build is reachable the same way on
+every platform. On Windows, `build`/`clean` also cover `Apps/SwiraWin` via `dotnet` — there's no
+separate per-subproject target, `make build` just builds everything buildable on the current
+platform. **If SwiftPM is ever replaced or supplemented by another build system, keep it callable
+through these same `make` targets** — update the Makefile's recipes rather than teaching people a
+second, parallel set of commands.
 
 - `Live Jira` (`Tests/SwiraCoreTests/LiveJiraTests.swift`) is a read-only integration suite,
   auto-skipped unless `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` are set. It never creates,
@@ -86,6 +88,67 @@ at the `JiraClient` level (ETag/304) and the `Service` level (cache-policy per r
   against the locally running dev server. Never trigger native `confirm()`/`alert()` dialogs via
   automation (the app's delete-filter flow uses `confirm(...)`) — use `javascript_tool` to call
   the DELETE API directly instead, plus manual state/DOM cleanup, when a test filter needs removal.
+- **`SwiraWin` (`Apps/SwiraWin`) is C#/WinUI 3, the one non-Swift piece of the stack** — WinUI's
+  XAML surface has no public non-.NET API, and a full Swift-native UI (thebrowsercompany's
+  swift-winrt) needs their experimental toolchain fork, not the stock release compiler this repo
+  otherwise builds with. Every Jira call still goes through `SwiraCore`: `Sources/SwiraABI`
+  exposes it as a flat, callback-based C ABI (`@_cdecl`, built as a Windows DLL — `swift build
+  --product SwiraABI`), which `Apps/SwiraWin/Native/SwiraCoreBridge.cs` P/Invokes directly. No
+  HTTP, no `swira-web` subprocess — this is the "local IPC" alternative the plan named, just
+  in-process rather than over a loopback socket. New async operations get added in pairs: a
+  `@_cdecl` function in `SwiraABI.swift` (callback-based, JSON in/out, DTOs mirroring
+  `WebAPI.swift`'s wire shapes) plus the matching `DllImport`/`Task<string>` wrapper in
+  `SwiraCoreBridge.cs`.
+  - `dotnet build` in `Apps/SwiraWin` needs `SwiraABI.dll` already built and copied in (the
+    `.csproj` does the copy automatically if `.build/debug|release/SwiraABI.dll` exists — build
+    SwiraABI first).
+  - **This dev machine has no Visual Studio, only the .NET SDK** — several of Microsoft.WindowsAppSDK's
+    imported MSBuild targets need VS-provided task assemblies
+    (`Microsoft.Build.Packaging.Pri.Tasks.dll`, `Microsoft.Build.AppxPackage.dll`) that don't
+    exist here. `Apps/SwiraWin/Directory.Build.targets` overrides the MSIX-packaging-only ones as
+    no-ops (irrelevant to an unpackaged app) and reimplements `resources.pri` generation by
+    shelling out to the Windows SDK's `makepri.exe` directly — **do not remove or "clean up"**
+    these overrides without first confirming Visual Studio's AppxPackage tooling is actually
+    installed; without them (or without a real VS), the build fails with `MSB4062` errors, and
+    without a `resources.pri` specifically, the app builds but **crashes on launch**
+    (`0xC000027B` inside `Microsoft.UI.Xaml.dll` — WinUI's default control styles are
+    resource-indexed and the WinRT `ResourceManager` has nothing to resolve them against).
+  - **`0xC000027B` inside `Microsoft.UI.Xaml.dll` is not unique to the missing-`resources.pri`
+    case above — it's also what a plain, catchable .NET exception looks like from the outside
+    when it escapes an `[UnmanagedCallersOnly]` method.** `SwiraCoreBridge`'s reply callback
+    (`OnReply`, invoked from Swift via `&OnReply`) resumes a `LoadIssuesAsync`/etc. continuation
+    from inside that native call; any exception thrown in code that runs as part of that
+    continuation (e.g. a XAML resource lookup that throws `KeyNotFoundException`) doesn't surface
+    as a normal catchable exception — the .NET runtime `FailFast`s the whole process, and Windows
+    Error Reporting logs it as the exact same fault signature as the resources.pri case. Confirmed
+    by reproducing it: `Application.Current.Resources.ThemeDictionaries[...]` throwing inside a
+    `LoadIssuesAsync` continuation. If this crash recurs, don't assume it's `resources.pri` stale
+    again — check timestamps first (`ls` the `.pri` file vs the `.exe`), and if they're already
+    fresh, suspect a throwing continuation instead. General rule: any code that runs as part of a
+    `SwiraCoreBridge`-await continuation must not let exceptions escape uncaught (or must avoid
+    APIs that can throw for reasons outside your control, like blind resource-dictionary
+    indexing) — wrap it defensively, because normal `try`/`catch` at the call site won't save you
+    once it's already unwound through the native boundary.
+  - **This same XamlCompiler.exe (Windows App SDK 1.6, .NET Framework 4.7.2, no Visual Studio)
+    hard-crashes on `ListView.GroupStyle`/`GroupStyle.HeaderTemplate` and on any custom
+    `DataTemplateSelector` referenced from XAML** — `MSB3073`/exit code 1 with zero diagnostic
+    text on either stdout or stderr, not an ordinary XAML parse error. Confirmed by bisection
+    with clean `obj`/`bin` each time (not a stale-incremental-cache artifact); plain `x:Bind` vs.
+    classic `{Binding}` made no difference. Group headers in the table/split views are therefore
+    ordinary `IssueRow`s (`IsGroupHeader = true`) rendered through the same single
+    `ListView.ItemTemplate` every other row uses, not a second template or `GroupStyle` — see
+    `ApplyGrouping` in `MainWindow.xaml.cs`. If a real Visual Studio install is ever available,
+    it's worth retrying `GroupStyle`/`DataTemplateSelector` there — the crash may be specific to
+    this bare-SDK toolchain, in which case the workaround could be dropped in favor of the more
+    idiomatic approach.
+  - **Screenshots taken via UI automation in this dev/test environment render the window's client
+    area solid black**, regardless of `SystemBackdrop`/Mica — confirmed by building and launching
+    with Mica explicitly disabled and observing the same black rectangle, with the process alive
+    and `Responding: True` and no crash event logged. This points to a Composition/DWM rendering
+    limitation of the sandboxed/remote session used for automation here (no GPU acceleration,
+    likely), not an app bug — real hardware should render normally. Don't treat a black screenshot
+    alone as proof of a rendering regression; corroborate with process health and, where possible,
+    testing on a non-sandboxed machine before "fixing" anything based on it.
 
 ## Conventions
 

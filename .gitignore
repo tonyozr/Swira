@@ -1,5 +1,6 @@
 .build/
 .swiftpm/
+dist/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 DerivedData/
@@ -7,3 +8,9 @@ DerivedData/
 *.env
 .env.local
 *.log
+
+# .NET / SwiraWin (Apps/SwiraWin)
+bin/
+obj/
+.vs/
+*.user

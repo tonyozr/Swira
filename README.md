@@ -11,7 +11,7 @@ The project consists of a reusable Swift core and several clients built on top o
 | `swira-web` — web client served on localhost | MVP |
 | `swira-cli` — terminal client built on [SwiftTUI](https://github.com/SwiftTUI/swift-tui) | planned (no Windows dev support in the framework) |
 | `SwiraMac` — native macOS app (AppKit) | planned |
-| `SwiraWin` — native Windows app (WinUI) | planned |
+| `SwiraWin` — native Windows app (WinUI) | MVP |
 
 ## Requirements
 
@@ -49,6 +49,38 @@ The UI and behaviour all clients implement is specified in
 [docs/CLIENT-SPEC.md](docs/CLIENT-SPEC.md). The canonical client is the native macOS app;
 terminal, GNUstep, Windows, and web implementations follow the same specification in their
 platform's idiom.
+
+### SwiraWin (native Windows/WinUI)
+
+`Apps/SwiraWin` is a C#/WinUI 3 shell — the only piece of the stack that isn't Swift, because
+WinUI's XAML surface has no public non-.NET API. Every Jira call still goes through `SwiraCore`:
+`Sources/SwiraABI` exposes it as a flat, callback-based C ABI (`@_cdecl`, built as
+`SwiraABI.dll`), which `Apps/SwiraWin/Native/SwiraCoreBridge.cs` P/Invokes directly — no HTTP, no
+`swira-web` subprocess, no IPC boundary crossing a socket.
+
+```powershell
+swift build --product SwiraABI          # produces .build/debug/SwiraABI.dll
+cd Apps/SwiraWin
+dotnet build                            # copies SwiraABI.dll next to SwiraWin.exe
+.\bin\Debug\net8.0-windows10.0.19041.0\win-x64\SwiraWin.exe
+```
+
+Or open `Apps/SwiraWin/SwiraWin.sln` in Visual Studio and build/run from there (F5). **Blend for
+Visual Studio does not support a visual design canvas for WinUI 3** — Microsoft's own docs and
+[microsoft/WindowsAppSDK#3201](https://github.com/microsoft/WindowsAppSDK/issues/3201) confirm
+the Design tab (in both Blend and VS's own XAML Designer) doesn't work for Windows App SDK
+projects; work on a real WinUI designer started in Windows App SDK 1.7 with no shipping date yet.
+The closest available visual tool is **XAML Live Preview** (VS 2022 17.14+): run the app, then use
+Live Preview to inspect/tweak the running UI. Editing `MainWindow.xaml`'s markup directly (with
+IntelliSense, which works fine) remains the primary workflow otherwise.
+
+Current coverage: sidebar (Favourites + filter tree, native, no full-reload flicker on
+expand/collapse), table view and split view (WebView2 issue pane) of a selected filter's issues,
+Key column links, and the query editor (Apply/Cancel, validation, JQL syntax highlighting, and
+filter-reference chips rendered inline in the text — see §3.3.1). Not yet implemented:
+configurable/editable table columns, filter creation, drag-and-drop, JQL autocomplete, and
+sort/group toolbar controls — see `Sources/SwiraABI/SwiraABI.swift` and
+`Apps/SwiraWin/MainWindow.xaml.cs` for what's wired up so far.
 
 ## Filter hierarchy
 
