@@ -17,10 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pins the same Swift toolchain version across all three runners, rather than trusting
-      # whatever happens to ship on each image (macOS runners bundle a Swift version tied to
-      # their Xcode image; Linux/Windows runners have none at all).
+      # On Linux and Windows, install a specific Swift toolchain (neither runner ships one).
+      # On macOS, skip this step — the runner's Xcode-bundled Swift is SDK-matched and using
+      # a standalone swift.org toolchain alongside a newer Xcode SDK causes module-build
+      # failures (e.g. _Builtin_float errors from mismatched clang headers).
       - name: Set up Swift
+        if: runner.os != 'macOS'
         uses: SwiftyLab/setup-swift@v1
         with:
           swift-version: "6.1"
