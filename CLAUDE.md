@@ -10,6 +10,12 @@ swift test                          # offline, self-contained — must stay gree
 swift test --filter <SuiteOrTestName>
 ```
 
+A `Makefile` wraps these same verbs (`make build`, `make test`, `make test FILTER=<Name>`,
+`make run-probe ARGS="whoami"`, `make run-web PORT=8787`, `make stop-web`, `make clean`, `make
+help`) so the build is reachable the same way on every platform. **If SwiftPM is ever replaced or
+supplemented by another build system, keep it callable through these same `make` targets** —
+update the Makefile's recipes rather than teaching people a second, parallel set of commands.
+
 - `Live Jira` (`Tests/SwiraCoreTests/LiveJiraTests.swift`) is a read-only integration suite,
   auto-skipped unless `JIRA_URL` / `JIRA_EMAIL` / `JIRA_API_TOKEN` are set. It never creates,
   modifies, or deletes anything — do not add mutating live tests without the user's explicit
@@ -20,7 +26,8 @@ swift test --filter <SuiteOrTestName>
   API). Default port 8787. **On Windows, a running `swira-web.exe` holds a file lock that makes
   `swift build` fail with a linker "permission denied" error.** Before rebuilding, find and stop
   it: `Get-NetTCPConnection -LocalPort 8787 -State Listen`, confirm the PID is really
-  `swira-web.exe` via `Get-Process -Id <pid> | Select Path`, then `Stop-Process -Id <pid> -Force`.
+  `swira-web.exe` via `Get-Process -Id <pid> | Select Path`, then `Stop-Process -Id <pid> -Force`
+  — or just run `make stop-web`, which does the same check-and-kill on Windows/macOS/Linux.
 
 ## Architecture
 
