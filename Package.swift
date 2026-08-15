@@ -13,6 +13,8 @@ let package = Package(
         // A flat C ABI over SwiraCore, built as a DLL on Windows. This is what SwiraWin
         // (Apps/SwiraWin, C#/WinUI) P/Invokes directly — see Sources/SwiraABI/SwiraABI.swift.
         .library(name: "SwiraABI", type: .dynamic, targets: ["SwiraABI"]),
+        // Native macOS AppKit client — the canonical reference implementation (CLIENT-SPEC.md §4).
+        .executable(name: "SwiraMac", targets: ["SwiraMac"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
@@ -44,6 +46,16 @@ let package = Package(
         .target(
             name: "SwiraABI",
             dependencies: ["SwiraCore"]
+        ),
+        // macOS AppKit client. macOS-only: guarded by the conditional compilation inside the
+        // source files themselves. SwiftPM does not support per-target platform restrictions on
+        // executables in the same way it does for libraries, so the guard lives in the code.
+        .executableTarget(
+            name: "SwiraMac",
+            dependencies: [
+                "SwiraCore",
+                .product(name: "Logging", package: "swift-log"),
+            ]
         ),
         .testTarget(
             name: "SwiraCoreTests",
