@@ -119,8 +119,11 @@ struct WebAPI: Sendable {
             // The table needs whatever the configured columns ask for; the split view needs its
             // own fixed set regardless of what the columns are, since its cards render those
             // fields no matter which columns the table is showing.
-            let fieldIds = Set(resolvedColumns.columns.map(\.value))
+            var fieldIds = Set(resolvedColumns.columns.map(\.value))
                 .union(SearchService.previewFields)
+            if fieldIds.contains("timeoriginalestimate") || fieldIds.contains("timeestimate") {
+                fieldIds.insert("timetracking")
+            }
 
             // `filter = <id> ORDER BY x y` is standard, valid JQL — appending an ORDER BY
             // overrides whatever order the filter's own JQL specifies, without touching the
@@ -173,7 +176,7 @@ struct WebAPI: Sendable {
         if method == "GET", segments == ["api", "fields"] {
             let swira = try requireSwira()
             let fields = try await swira.reference.fields()
-            return try json(fields.value.map { FieldRefDTO(id: $0.id, name: $0.name) })
+            return try json(fields.value.map { FieldRefDTO(id: $0.id, name: $0.name, type: $0.type) })
         }
 
         if method == "GET", segments == ["api", "priorities"] {
@@ -230,6 +233,25 @@ struct WebAPI: Sendable {
                 try await swira.issue.setLabels(issueKey: key, labels: body.labels ?? [])
             case "fixVersions":
                 try await swira.issue.setFixVersions(issueKey: key, versionIds: body.versionIds ?? [])
+            case "date":
+                guard let fieldId = body.fieldId else {
+                    return errorResponse("A date edit needs fieldId.", status: 400)
+                }
+                try await swira.issue.setDate(issueKey: key, fieldId: fieldId, value: body.value)
+            case "estimate":
+                let fieldId = body.fieldId ?? "timeoriginalestimate"
+                if fieldId == "timeestimate" {
+                    try await swira.issue.setTimeTracking(
+                        issueKey: key,
+                        remainingEstimate: body.value ?? body.remainingEstimate
+                    )
+                } else {
+                    try await swira.issue.setTimeTracking(
+                        issueKey: key,
+                        originalEstimate: body.value ?? body.originalEstimate,
+                        remainingEstimate: body.remainingEstimate
+                    )
+                }
             default:
                 return errorResponse("Unknown edit kind '\(body.kind)'.", status: 400)
             }
@@ -545,6 +567,7 @@ struct ColumnsDTO: Encodable {
 struct FieldRefDTO: Encodable {
     let id: String
     let name: String
+    let type: String?
 }
 
 struct PriorityRefDTO: Encodable {
@@ -585,6 +608,8 @@ private struct FieldEditBody: Decodable {
     let accountId: String?
     let labels: [String]?
     let versionIds: [String]?
+    let originalEstimate: String?
+    let remainingEstimate: String?
 }
 
 private struct TransitionBody: Decodable {

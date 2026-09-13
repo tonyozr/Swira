@@ -108,6 +108,47 @@ struct IssueServiceTests {
         #expect(body["fields"]?["fixVersions"]?.arrayValue == [])
     }
 
+    @Test("Setting a date sends a date string in YYYY-MM-DD format")
+    func setsDateField() async throws {
+        let mock = MockTransport(stubs: [.status(204)])
+        try await makeService(mock).setDate(issueKey: "SW-1", fieldId: "duedate", value: "2026-03-25")
+
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body.path("fields.duedate") == .string("2026-03-25"))
+    }
+
+    @Test("Clearing a date sends null")
+    func clearsDateField() async throws {
+        let mock = MockTransport(stubs: [.status(204)])
+        try await makeService(mock).setDate(issueKey: "SW-1", fieldId: "duedate", value: nil)
+
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body["fields"]?["duedate"]?.isNull == true)
+    }
+
+    @Test("Setting timetracking sends duration strings in the timetracking object")
+    func setsTimeTracking() async throws {
+        let mock = MockTransport(stubs: [.status(204)])
+        try await makeService(mock).setTimeTracking(issueKey: "SW-1", originalEstimate: "1d 2h", remainingEstimate: "4h")
+
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body.path("fields.timetracking.originalEstimate") == .string("1d 2h"))
+        #expect(body.path("fields.timetracking.remainingEstimate") == .string("4h"))
+    }
+
+    @Test("Clearing timetracking estimate sends null")
+    func clearsTimeTrackingEstimate() async throws {
+        let mock = MockTransport(stubs: [.status(204)])
+        try await makeService(mock).setTimeTracking(issueKey: "SW-1", originalEstimate: "")
+
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body.path("fields.timetracking.originalEstimate")?.isNull == true)
+    }
+
     @Test("A field update never touches fields the caller didn't mention")
     func onlyUpdatesGivenFields() async throws {
         let mock = MockTransport(stubs: [.status(204)])

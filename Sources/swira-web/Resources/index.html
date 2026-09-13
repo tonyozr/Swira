@@ -97,7 +97,7 @@
        coordinate space — the one case a `<td>`-relative `position: absolute` reliably escapes. */
     position: fixed; z-index: 20; background: #fff;
     border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.15);
-    padding: 4px; min-width: 180px; max-height: 200px; overflow-y: auto;
+    padding: 4px; min-width: 180px; max-height: calc(100vh - 16px); max-width: calc(100vw - 16px); overflow-y: auto;
   }
   .floating-picker .option {
     padding: 5px 7px; border-radius: 5px; cursor: pointer; font-size: 12px;
@@ -138,6 +138,41 @@
   .cell-editor select { width: 100%; }
   .cell-saving { opacity: .5; }
   .cell-error { outline: 1px solid var(--error); }
+  #estimate-picker, #date-picker {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 8px; min-width: 210px; max-width: 270px; max-height: calc(100vh - 16px); overflow-y: auto;
+  }
+  .picker-title {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted);
+  }
+  .picker-input {
+    width: 100%; font: inherit; font-size: 12.5px;
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 4px 6px; outline: none; background: #fff; color: var(--text);
+  }
+  .picker-input:focus { border-color: var(--accent); }
+  .picker-btn-row {
+    display: flex; gap: 4px; flex-wrap: wrap; align-items: center;
+  }
+  .picker-btn-row .btn-quick {
+    border: 1px solid var(--border); background: #fafaf8; border-radius: 4px;
+    padding: 2px 7px; font-size: 11.5px; font-weight: 500; cursor: pointer; color: var(--text);
+  }
+  .picker-btn-row .btn-quick:hover {
+    background: var(--accent-soft); border-color: #c9d7ec; color: var(--accent);
+  }
+  .picker-footer {
+    display: flex; justify-content: flex-end; gap: 6px; margin-top: 2px; padding-top: 6px;
+    border-top: 1px solid #eee;
+  }
+  .picker-footer button {
+    border: 1px solid var(--border); border-radius: 5px; padding: 3px 10px;
+    font-size: 12px; cursor: pointer; background: #fff; color: var(--text);
+  }
+  .picker-footer button.apply {
+    background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600;
+  }
+  .picker-footer button.apply:hover { background: #3d5c90; }
 
   /* Columns dialog */
   #columns-current { display: flex; flex-direction: column; gap: 2px; margin: 8px 0; max-height: 200px; overflow-y: auto; }
@@ -250,8 +285,9 @@
   /* Filter-reference picker popover (spec §3.3.1) */
   .side-item[draggable="true"] { cursor: grab; }
   #chip-popover {
-    position: absolute; z-index: 10; background: #fff; border: 1px solid var(--border);
+    position: fixed; z-index: 25; background: #fff; border: 1px solid var(--border);
     border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.15); padding: 6px; width: 220px;
+    max-height: calc(100vh - 16px); max-width: calc(100vw - 16px); overflow-y: auto;
     display: none;
   }
   #chip-popover input { width: 100%; padding: 5px 7px; border: 1px solid var(--border);
@@ -338,6 +374,8 @@
        because caret-relative positioning needs the same viewport-fixed math regardless. -->
   <div id="jql-autocomplete" class="floating-picker" style="display:none"></div>
   <div id="version-picker" class="floating-picker" style="display:none"></div>
+  <div id="estimate-picker" class="floating-picker" style="display:none"></div>
+  <div id="date-picker" class="floating-picker" style="display:none"></div>
 
   <dialog id="dlg-new">
     <b>New filter</b>
@@ -650,6 +688,12 @@ function renderFieldValue(value, fieldId) {
       const summary = linked.fields?.summary ? `: ${linked.fields.summary}` : "";
       return `${verb ?? "linked to"} ${linked.key}${summary}`;
     }
+    if (fieldId === "timetracking" && (value.originalEstimate || value.remainingEstimate)) {
+      if (value.originalEstimate && value.remainingEstimate) {
+        return `${value.remainingEstimate} (orig: ${value.originalEstimate})`;
+      }
+      return value.originalEstimate || value.remainingEstimate || "";
+    }
     return value.displayName ?? value.name ?? value.value ?? value.key ?? "";
   }
   if (typeof value === "string" && JIRA_TIMESTAMP.test(value)) {
@@ -665,6 +709,56 @@ function renderFieldValue(value, fieldId) {
     }
   }
   return String(value);
+}
+
+function addDuration(currentStr, unitToAdd) {
+  const s = (currentStr || "").trim();
+  if (!s) return unitToAdd;
+
+  let w = 0, d = 0, h = 0, m = 0;
+  const wMatch = s.match(/(\d+(?:\.\d+)?)\s*w/i);
+  const dMatch = s.match(/(\d+(?:\.\d+)?)\s*d/i);
+  const hMatch = s.match(/(\d+(?:\.\d+)?)\s*h/i);
+  const mMatch = s.match(/(\d+(?:\.\d+)?)\s*m/i);
+
+  if (wMatch) w = parseFloat(wMatch[1]);
+  if (dMatch) d = parseFloat(dMatch[1]);
+  if (hMatch) h = parseFloat(hMatch[1]);
+  if (mMatch) m = parseFloat(mMatch[1]);
+
+  if (!wMatch && !dMatch && !hMatch && !mMatch) {
+    const num = parseFloat(s);
+    if (!isNaN(num)) h = num; else return unitToAdd;
+  }
+
+  if (unitToAdd === "1d") d += 1;
+  else if (unitToAdd === "1w") w += 1;
+
+  const parts = [];
+  if (w > 0) parts.push(`${w}w`);
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  return parts.join(" ") || "0m";
+}
+
+function formatLocalDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function adjustDate(currentStr, daysToAdd) {
+  let base;
+  if (currentStr && /^\d{4}-\d{2}-\d{2}$/.test(currentStr.trim())) {
+    const parts = currentStr.trim().split("-").map((p) => parseInt(p, 10));
+    base = new Date(parts[0], parts[1] - 1, parts[2]);
+  } else {
+    base = new Date();
+  }
+  base.setDate(base.getDate() + daysToAdd);
+  return formatLocalDate(base);
 }
 
 /// Table-cell rendering of a field value, as safe HTML: like `renderFieldValue`, but an issue
@@ -689,13 +783,23 @@ function renderFieldValueHTML(value, fieldId) {
 
 /// Basic field types this v1 can edit inline (spec §3.1) — everything else in a configured
 /// column renders read-only. `null` means "not editable."
-function editableKindFor(fieldId) {
+function editableKindFor(fieldId, raw) {
   if (fieldId === "status") return "status";
   if (fieldId === "priority") return "priority";
   if (fieldId === "assignee") return "assignee";
   if (fieldId === "labels") return "labels";
   if (fieldId === "fixVersions") return "fixVersions";
   if (fieldId === "summary") return "text";
+  if (fieldId === "duedate") return "date";
+  if (fieldId === "timeoriginalestimate" || fieldId === "timeestimate" || fieldId === "timetracking") return "estimate";
+  if (typeof raw === "string" && JIRA_DATE_ONLY.test(raw)) return "date";
+  if (state.allFields) {
+    const f = state.allFields.find((f) => f.id === fieldId);
+    if (f && f.type === "date") return "date";
+  }
+  if (fieldId !== "created" && fieldId !== "updated" && fieldId !== "resolutiondate" && fieldId.toLowerCase().includes("date")) {
+    return "date";
+  }
   return null;
 }
 
@@ -760,8 +864,8 @@ function renderTable() {
     for (const issue of group.issues) {
       html += `<tr><td class="key"><a href="${issue.browseUrl}" target="_blank" rel="noopener">${issue.key}</a></td>`;
       for (const column of columns) {
-        const kind = editableKindFor(column.value);
         const raw = issue.fields[column.value];
+        const kind = editableKindFor(column.value, raw);
         const display = column.value === "status"
           ? `<span class="dot ${issue.statusCategory || ""}"></span>${renderFieldValueHTML(raw, column.value)}`
           : renderFieldValueHTML(raw, column.value);
@@ -1055,6 +1159,184 @@ async function activateCellEditor(cell) {
     input.onkeydown = (event) => {
       if (event.key === "Escape") { closePicker(); cell.innerHTML = original; }
     };
+    return;
+  }
+
+  if (kind === "estimate") {
+    const issue = state.issues.find((i) => i.key === key);
+    const tracking = issue?.fields?.timetracking;
+    let currentVal = "";
+    if (fieldId === "timeestimate" && tracking?.remainingEstimate) {
+      currentVal = tracking.remainingEstimate;
+    } else if (tracking?.originalEstimate) {
+      currentVal = tracking.originalEstimate;
+    } else {
+      const raw = issue?.fields?.[fieldId];
+      if (typeof raw === "number" && DURATION_FIELD_IDS.has(fieldId)) {
+        currentVal = formatDuration(raw);
+      } else if (raw && typeof raw === "string") {
+        currentVal = raw;
+      }
+    }
+
+    cell.classList.add("editing");
+    const picker = $("estimate-picker");
+    const fieldLabel = fieldId === "timeestimate" ? "Remaining Estimate" : "Original Estimate";
+
+    picker.innerHTML = `
+      <div class="picker-title">${escapeHTML(fieldLabel)}</div>
+      <input type="text" class="picker-input" placeholder="e.g. 1d 4h, 30m" value="${escapeHTML(currentVal)}">
+      <div class="picker-btn-row">
+        <button type="button" class="btn-quick" data-add="1d">+1d</button>
+        <button type="button" class="btn-quick" data-add="1w">+1w</button>
+        <button type="button" class="btn-quick" data-clear="1">Clear</button>
+      </div>
+      <div class="picker-footer">
+        <button type="button" class="btn-cancel">Cancel</button>
+        <button type="button" class="apply">Save</button>
+      </div>`;
+
+    const input = picker.querySelector(".picker-input");
+    input.focus();
+    input.select();
+
+    picker.querySelectorAll(".btn-quick").forEach((btn) => {
+      btn.onclick = () => {
+        if (btn.dataset.add) {
+          input.value = addDuration(input.value, btn.dataset.add);
+        } else if (btn.dataset.clear) {
+          input.value = "";
+        }
+        input.focus();
+      };
+    });
+
+    const finish = () => {
+      hideFloatingPicker(picker);
+      cell.classList.remove("editing");
+      document.removeEventListener("mousedown", onOutsideClick, true);
+      document.removeEventListener("keydown", onKeydown, true);
+    };
+
+    const onOutsideClick = (event) => {
+      if (!picker.contains(event.target) && !cell.contains(event.target)) {
+        finish();
+        cell.innerHTML = original;
+      }
+    };
+
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        finish();
+        cell.innerHTML = original;
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        apply();
+      }
+    };
+
+    const apply = () => {
+      const val = input.value.trim();
+      finish();
+      saveCellEdit(cell, key, { kind: "estimate", fieldId, value: val || null }, original);
+    };
+
+    picker.querySelector(".btn-cancel").onclick = () => {
+      finish();
+      cell.innerHTML = original;
+    };
+    picker.querySelector(".apply").onclick = apply;
+
+    document.addEventListener("mousedown", onOutsideClick, true);
+    document.addEventListener("keydown", onKeydown, true);
+    positionFloatingPicker(picker, cell);
+    return;
+  }
+
+  if (kind === "date") {
+    const issue = state.issues.find((i) => i.key === key);
+    const raw = issue?.fields?.[fieldId];
+    let currentDate = "";
+    if (typeof raw === "string") {
+      const m = raw.match(/^\d{4}-\d{2}-\d{2}/);
+      if (m) currentDate = m[0];
+    }
+
+    cell.classList.add("editing");
+    const picker = $("date-picker");
+    const fieldLabel = fieldId === "duedate" ? "Due Date" : (fieldId.charAt(0).toUpperCase() + fieldId.slice(1));
+
+    picker.innerHTML = `
+      <div class="picker-title">${escapeHTML(fieldLabel)}</div>
+      <input type="date" class="picker-input" value="${escapeHTML(currentDate)}">
+      <div class="picker-btn-row">
+        <button type="button" class="btn-quick" data-date="today">Today</button>
+        <button type="button" class="btn-quick" data-add="1d">+1d</button>
+        <button type="button" class="btn-quick" data-add="1w">+1w</button>
+        <button type="button" class="btn-quick" data-clear="1">Clear</button>
+      </div>
+      <div class="picker-footer">
+        <button type="button" class="btn-cancel">Cancel</button>
+        <button type="button" class="apply">Save</button>
+      </div>`;
+
+    const input = picker.querySelector(".picker-input");
+    input.focus();
+
+    picker.querySelectorAll(".btn-quick").forEach((btn) => {
+      btn.onclick = () => {
+        if (btn.dataset.date === "today") {
+          input.value = formatLocalDate(new Date());
+        } else if (btn.dataset.add === "1d") {
+          input.value = adjustDate(input.value, 1);
+        } else if (btn.dataset.add === "1w") {
+          input.value = adjustDate(input.value, 7);
+        } else if (btn.dataset.clear) {
+          input.value = "";
+        }
+        input.focus();
+      };
+    });
+
+    const finish = () => {
+      hideFloatingPicker(picker);
+      cell.classList.remove("editing");
+      document.removeEventListener("mousedown", onOutsideClick, true);
+      document.removeEventListener("keydown", onKeydown, true);
+    };
+
+    const onOutsideClick = (event) => {
+      if (!picker.contains(event.target) && !cell.contains(event.target)) {
+        finish();
+        cell.innerHTML = original;
+      }
+    };
+
+    const onKeydown = (event) => {
+      if (event.key === "Escape") {
+        finish();
+        cell.innerHTML = original;
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        apply();
+      }
+    };
+
+    const apply = () => {
+      const val = input.value.trim();
+      finish();
+      saveCellEdit(cell, key, { kind: "date", fieldId, value: val || null }, original);
+    };
+
+    picker.querySelector(".btn-cancel").onclick = () => {
+      finish();
+      cell.innerHTML = original;
+    };
+    picker.querySelector(".apply").onclick = apply;
+
+    document.addEventListener("mousedown", onOutsideClick, true);
+    document.addEventListener("keydown", onKeydown, true);
+    positionFloatingPicker(picker, cell);
     return;
   }
 }
@@ -1416,13 +1698,21 @@ function renderEditor(explicitCaretOffset) {
   const editor = $("jql-editor");
   const text = canonicalText(editor);
   const caretOffset = explicitCaretOffset !== undefined ? explicitCaretOffset : caretOffsetInRoot(editor);
+  const savedScrollTop = editor.scrollTop;
+  const savedScrollLeft = editor.scrollLeft;
   editor.innerHTML = buildEditorHTML(text, caretOffset);
+  editor.scrollTop = savedScrollTop;
+  editor.scrollLeft = savedScrollLeft;
   if (caretOffset !== null) setCaretOffset(editor, caretOffset);
 }
 
 function setEditorText(text, caretOffset) {
   const editor = $("jql-editor");
+  const savedScrollTop = editor.scrollTop;
+  const savedScrollLeft = editor.scrollLeft;
   editor.innerHTML = buildEditorHTML(text, caretOffset);
+  editor.scrollTop = savedScrollTop;
+  editor.scrollLeft = savedScrollLeft;
   if (caretOffset !== null) setCaretOffset(editor, caretOffset);
 }
 
@@ -1458,12 +1748,27 @@ function openChipPicker(chip, id, event) {
   event.stopPropagation();
   chipPickerTarget = { id };
   const popover = $("chip-popover");
-  const rect = chip.getBoundingClientRect();
-  popover.style.left = `${rect.left}px`;
-  popover.style.top = `${rect.bottom + 4}px`;
   popover.style.display = "block";
   $("chip-search").value = "";
   $("chip-options").innerHTML = `<div class="empty">Type to search…</div>`;
+
+  const rect = chip.getBoundingClientRect();
+  const margin = 8;
+  const popoverRect = popover.getBoundingClientRect();
+  let top = rect.bottom + 4;
+  if (top + popoverRect.height > window.innerHeight - margin) {
+    top = Math.max(margin, rect.top - popoverRect.height - 4);
+  }
+  top = Math.max(margin, Math.min(top, window.innerHeight - popoverRect.height - margin));
+
+  let left = rect.left;
+  if (left + popoverRect.width > window.innerWidth - margin) {
+    left = Math.min(rect.right - popoverRect.width, window.innerWidth - popoverRect.width - margin);
+  }
+  left = Math.max(margin, Math.min(left, window.innerWidth - popoverRect.width - margin));
+
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(top)}px`;
   $("chip-search").focus();
 }
 
@@ -1527,7 +1832,9 @@ function setupChipDropTarget() {
     if (!raw) return;
     const filter = JSON.parse(raw);
     filterNamesById[filter.id] = filter.name;
+    const savedScroll = editor.scrollTop;
     insertFilterReference(filter.id, editorOffsetAtPoint(editor, event.clientX, event.clientY));
+    editor.scrollTop = savedScroll;
   };
 }
 
@@ -1718,7 +2025,7 @@ function insertFilterReference(id, offset) {
     caret = matchEnd + 1;
   }
 
-  editor.focus();
+  editor.focus({ preventScroll: true });
   setEditorText(newText, caret);
 }
 
@@ -2320,19 +2627,37 @@ function escapeHTML(text) {
 /// this is unaffected by any scrollable ancestor the anchor happens to sit inside.
 function positionFloatingPicker(picker, anchor) {
   const rect = anchor.getBoundingClientRect();
-  const margin = 6;
+  const margin = 8;
   // Not always "block": `#version-picker` is CSS `display: flex` (its search box and Apply
   // button stay put while only the checklist between them scrolls) — writing "block" here as
   // an inline style would beat that rule and collapse the layout back to one long list.
-  picker.style.display = picker.id === "version-picker" ? "flex" : "block";
-  // The picker needs a size before its height can inform the below-vs-above choice.
-  const pickerHeight = picker.getBoundingClientRect().height;
+  picker.style.display = (picker.id === "version-picker" || picker.id === "estimate-picker" || picker.id === "date-picker") ? "flex" : "block";
+
+  // The picker needs a size before its dimensions can inform position choices.
+  const pickerRect = picker.getBoundingClientRect();
+  const pickerHeight = pickerRect.height;
+  const pickerWidth = pickerRect.width;
+
+  // Vertical: prefer below, flip above if overflowing bottom
   let top = rect.bottom + 4;
   if (top + pickerHeight > window.innerHeight - margin) {
-    top = rect.top - pickerHeight - 4;
+    const topAbove = rect.top - pickerHeight - 4;
+    if (topAbove >= margin || rect.top > (window.innerHeight - rect.bottom)) {
+      top = topAbove;
+    }
   }
-  picker.style.left = `${Math.max(margin, rect.left)}px`;
-  picker.style.top = `${Math.max(margin, top)}px`;
+  top = Math.max(margin, Math.min(top, window.innerHeight - pickerHeight - margin));
+
+  // Horizontal: align with anchor's left edge, but if overflowing right, align to anchor's right
+  // edge or clamp to screen boundary so all controls (Save/Cancel, buttons) remain reachable.
+  let left = rect.left;
+  if (left + pickerWidth > window.innerWidth - margin) {
+    left = Math.min(rect.right - pickerWidth, window.innerWidth - pickerWidth - margin);
+  }
+  left = Math.max(margin, Math.min(left, window.innerWidth - pickerWidth - margin));
+
+  picker.style.left = `${Math.round(left)}px`;
+  picker.style.top = `${Math.round(top)}px`;
 }
 
 function hideFloatingPicker(picker) {
@@ -2354,17 +2679,17 @@ function showDialogNear(dialog, anchor) {
   if (left + dialogRect.width > window.innerWidth - margin) {
     left = window.innerWidth - dialogRect.width - margin;
   }
-  left = Math.max(margin, left);
+  left = Math.max(margin, Math.min(left, window.innerWidth - dialogRect.width - margin));
 
   let top = anchorRect.bottom + 6;
   if (top + dialogRect.height > window.innerHeight - margin) {
     // Not enough room below the button — open above it instead.
     top = anchorRect.top - dialogRect.height - 6;
   }
-  top = Math.max(margin, top);
+  top = Math.max(margin, Math.min(top, window.innerHeight - dialogRect.height - margin));
 
-  dialog.style.top = `${top}px`;
-  dialog.style.left = `${left}px`;
+  dialog.style.top = `${Math.round(top)}px`;
+  dialog.style.left = `${Math.round(left)}px`;
 }
 
 /// The visible text an HTML snippet renders as — used to recover a cell's displayed value

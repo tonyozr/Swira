@@ -74,6 +74,39 @@ public actor IssueService {
         )
     }
 
+    /// Sets a date field (e.g. `duedate` or a date custom field), or clears it when `value` is `nil` or empty.
+    public func setDate(issueKey: String, fieldId: String, value: String?) async throws {
+        let jsonValue: JSONValue
+        if let value = value?.trimmingCharacters(in: .whitespaces), !value.isEmpty {
+            jsonValue = .string(value)
+        } else {
+            jsonValue = .null
+        }
+        try await updateFields(issueKey: issueKey, fields: [fieldId: jsonValue])
+    }
+
+    /// Sets time tracking estimates on an issue.
+    ///
+    /// Jira supports duration strings such as `"1d"`, `"2h 30m"`, `"1w"`.
+    /// Passing `nil` or empty string clears the respective estimate.
+    public func setTimeTracking(
+        issueKey: String,
+        originalEstimate: String? = nil,
+        remainingEstimate: String? = nil
+    ) async throws {
+        var timetracking: [String: JSONValue] = [:]
+        if let originalEstimate {
+            let trimmed = originalEstimate.trimmingCharacters(in: .whitespaces)
+            timetracking["originalEstimate"] = trimmed.isEmpty ? .null : .string(trimmed)
+        }
+        if let remainingEstimate {
+            let trimmed = remainingEstimate.trimmingCharacters(in: .whitespaces)
+            timetracking["remainingEstimate"] = trimmed.isEmpty ? .null : .string(trimmed)
+        }
+        guard !timetracking.isEmpty else { return }
+        try await updateFields(issueKey: issueKey, fields: ["timetracking": .object(timetracking)])
+    }
+
     /// The transitions currently available for this issue, given its status and workflow.
     public func transitions(issueKey: String) async throws -> [IssueTransition] {
         try await client.send(
