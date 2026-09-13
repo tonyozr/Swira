@@ -130,10 +130,16 @@ modes**, with a persistent per-filter choice. A toolbar switcher toggles between
   (`FiltersService.columns/setColumns`), so it travels with the filter, not the client. A
   filter with no columns configured falls back to a fixed default set — configuring never
   changes what a filter shows until the user actually asks it to.
-- Cells are **editable**, in v1 for **basic field types only**: text, single-choice fields
-  (status via `IssueService.transition`, priority, assignee), labels, and fix versions.
+- Cells are **editable**, in v1 for **basic field types**: text, single-choice fields
+  (status via `IssueService.transition`, priority, assignee), labels, fix versions, dates
+  (`duedate` and date fields via `IssueService.setDate`), and time-tracking estimates
+  (`timeoriginalestimate`, `timeestimate`, and `timetracking` via `IssueService.setTimeTracking`).
   Complex custom fields render read-only until a later revision. Edits go through
   `IssueService`; failures surface the core's error text and revert the cell.
+- Date editing provides a **date picker** with a date input and quick shortcut buttons
+  (`Today`, `+1d`, `+1w`, `Clear`).
+- Estimates editing provides an **estimate editor** for duration strings (e.g. `1d 4h`, `2w`)
+  with quick increment buttons (`+1d`, `+1w`) and `Clear`.
 - Fix versions editing is a **multi-select checklist** against the issue's project's actual
   version list (`ReferenceService.projectVersions`), not free text — an id is unambiguous
   where a typed name could collide across projects, and a checklist can't produce a version
@@ -288,7 +294,7 @@ visually distinct. Clients MUST NOT present cached data as current.
 | macOS (AppKit) | Canonical. Sheet for the query editor, `WKWebView` for the issue pane. |
 | Terminal (SwiftTUI) | Same layout in cells: sidebar pane, list/table pane. Split view's right pane is a read-only render + "open in browser". |
 | GNUstep | Follows the macOS structure with GNUstep equivalents. |
-| Windows (WinUI) | Same structure; WebView2 for the issue pane. |
+| Windows (WinUI) | Same structure; WebView2 for the issue pane. Filter-reference chips (§3.3.1) render inline in the query editor's `RichEditBox`, matching the web client's look: a committed reference is literal text `🔗 <name>` with pill character formatting, its numeric id kept in the run (for round-tripping to `filter = <id>`) but painted invisible. |
 | Web | The application serves HTTP on localhost; the browser UI implements this same
   specification. The web client talks to the same core (via the serving process), not to
   Jira directly. |

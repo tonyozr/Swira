@@ -1,0 +1,402 @@
+<Window
+    x:Class="SwiraWin.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:local="using:SwiraWin"
+    xmlns:webview2="using:Microsoft.UI.Xaml.Controls">
+
+    <Grid x:Name="RootGrid" KeyDown="RootGrid_KeyDown">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="40" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Title bar: content-into-title-bar (Win11 idiom) — just more Mica, no solid band, so
+             the window reads as one continuous surface with the rounded card below it, not a
+             flat Win10-style caption glued on top of unstyled content. -->
+        <Grid x:Name="AppTitleBar" Grid.Row="0" Padding="16,0,140,0">
+            <TextBlock Text="Swira" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="12" Opacity="0.75" />
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="8,0,8,8" ColumnSpacing="0">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="260" />
+            <ColumnDefinition Width="*" />
+        </Grid.ColumnDefinitions>
+
+        <!-- The card: everything below the title bar sits inset from the window edge with rounded
+             corners on its own layer background, the same "distinct panel over Mica" look Win11's
+             own apps (Settings, Apple Devices) use — rather than sidebar/content painted flush to
+             the window edge with a flat, undifferentiated background. -->
+        <Border Grid.Column="0" Grid.ColumnSpan="2"
+                Background="{ThemeResource LayerFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1"
+                CornerRadius="8" />
+
+        <!-- ==================== Sidebar (CLIENT-SPEC.md §2) ==================== -->
+        <Grid Grid.Column="0"
+              CornerRadius="8,0,0,8"
+              BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <ListView x:Name="SidebarList"
+                      Grid.Row="0"
+                      SelectionMode="Single"
+                      SelectionChanged="SidebarList_SelectionChanged"
+                      CanDragItems="True"
+                      DragItemsStarting="SidebarList_DragItemsStarting"
+                      Padding="0,8,0,8">
+                <ListView.ItemTemplate>
+                    <DataTemplate x:DataType="local:SidebarRow">
+                        <Grid Padding="{x:Bind IndentThickness}" ColumnSpacing="6"
+                              IsHitTestVisible="{x:Bind IsSelectable}"
+                              CornerRadius="4">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.ContextFlyout>
+                                <MenuFlyout>
+                                    <MenuFlyoutItem Text="Rename" Tag="{x:Bind}" Click="RenameSidebarItem_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <SymbolIcon Symbol="Rename" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                    <MenuFlyoutItem Text="Delete" Tag="{x:Bind}" Click="DeleteSidebarItem_Click">
+                                        <MenuFlyoutItem.Icon>
+                                            <SymbolIcon Symbol="Delete" />
+                                        </MenuFlyoutItem.Icon>
+                                    </MenuFlyoutItem>
+                                </MenuFlyout>
+                            </Grid.ContextFlyout>
+                            <TextBlock Grid.Column="0" Text="{x:Bind Glyph}"
+                                       FontFamily="Segoe MDL2 Assets" FontSize="10"
+                                       VerticalAlignment="Center" Opacity="0.7" />
+                            <TextBlock Grid.Column="1" Text="{x:Bind DisplayName}"
+                                       FontWeight="{x:Bind FontWeight}"
+                                       Opacity="{x:Bind Opacity}"
+                                       TextTrimming="CharacterEllipsis" />
+                        </Grid>
+                    </DataTemplate>
+                </ListView.ItemTemplate>
+            </ListView>
+
+            <Button Grid.Row="1" Margin="8" HorizontalAlignment="Stretch" Style="{StaticResource AccentButtonStyle}"
+                    Click="NewFilter_Click">
+                <StackPanel Orientation="Horizontal" Spacing="6" HorizontalAlignment="Center">
+                    <SymbolIcon Symbol="Add" />
+                    <TextBlock Text="New filter" />
+                </StackPanel>
+            </Button>
+        </Grid>
+
+        <!-- Filter creation (§2.3): Enter submits from the (single-line) name field; the
+             multi-line JQL field keeps Enter as a plain newline — ContentDialog's own default-
+             button handling already does the right thing for both without extra plumbing. -->
+        <ContentDialog x:Name="NewFilterDialog" Title="New filter"
+                       PrimaryButtonText="Create" CloseButtonText="Cancel" DefaultButton="Primary"
+                       PrimaryButtonClick="NewFilterDialog_PrimaryButtonClick">
+            <StackPanel Spacing="8" Width="360">
+                <TextBox x:Name="NewFilterNameBox" Header="Name" PlaceholderText="e.g. Swira: Versions: Current" />
+                <TextBox x:Name="NewFilterJqlBox" Header="JQL (optional — matches everything if left empty)"
+                         AcceptsReturn="True" TextWrapping="Wrap" Height="90"
+                         FontFamily="Cascadia Mono, Consolas, monospace" />
+                <TextBlock x:Name="NewFilterError" Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+        </ContentDialog>
+
+        <!-- Rename (§2.3): "move" in the tree is this same operation — editing the full path
+             directly (segments separated by ": ") renames a leaf filter, or the whole branch
+             when invoked on a group node. -->
+        <ContentDialog x:Name="RenameDialog" Title="Rename"
+                       PrimaryButtonText="Rename" CloseButtonText="Cancel" DefaultButton="Primary"
+                       PrimaryButtonClick="RenameDialog_PrimaryButtonClick">
+            <StackPanel Spacing="8" Width="360">
+                <TextBox x:Name="RenameNameBox" Header="Name" />
+                <TextBlock x:Name="RenameError" Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                           TextWrapping="Wrap" />
+            </StackPanel>
+        </ContentDialog>
+
+        <!-- Delete (§2.3): MUST require confirmation. -->
+        <ContentDialog x:Name="DeleteConfirmDialog" Title="Delete filter?"
+                       PrimaryButtonText="Delete" CloseButtonText="Cancel" DefaultButton="Close">
+            <TextBlock x:Name="DeleteConfirmText" TextWrapping="Wrap" />
+        </ContentDialog>
+
+        <!-- ==================== Content area (CLIENT-SPEC.md §3) ==================== -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" /> <!-- toolbar -->
+                <RowDefinition Height="Auto" /> <!-- query editor panel (collapsible) -->
+                <RowDefinition Height="Auto" /> <!-- config/error banner -->
+                <RowDefinition Height="*" />    <!-- table -->
+            </Grid.RowDefinitions>
+
+            <!-- Toolbar -->
+            <Border Grid.Row="0" Background="{ThemeResource LayerFillColorAltBrush}"
+                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1"
+                    CornerRadius="0,8,0,0">
+                <StackPanel Orientation="Horizontal" Padding="16,12" Spacing="8">
+                    <Rectangle Width="4" Height="20" RadiusX="2" RadiusY="2" Fill="{ThemeResource AccentFillColorDefaultBrush}"
+                               VerticalAlignment="Center" Margin="0,0,4,0" />
+                    <TextBlock x:Name="FilterTitle" Text="No filter selected" VerticalAlignment="Center"
+                               FontWeight="SemiBold" FontSize="15" MinWidth="160" Margin="0,0,8,0" />
+                    <!-- A pair of view-mode states, not two independent actions like the buttons
+                         around them — no gap, and the edge where they touch is square on both
+                         sides (only the outer two corners of the pair stay rounded), so they read
+                         as one two-position switch rather than two separate buttons that happen
+                         to be adjacent. The 1px negative margin on Split overlaps the two
+                         buttons' borders so the shared edge isn't twice as thick as the others. -->
+                    <StackPanel Orientation="Horizontal" Spacing="0">
+                        <ToggleButton x:Name="TableViewButton" IsChecked="True" Click="TableViewButton_Click"
+                                      CornerRadius="4,0,0,4">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <SymbolIcon Symbol="List" />
+                                <TextBlock Text="Table" />
+                            </StackPanel>
+                        </ToggleButton>
+                        <ToggleButton x:Name="SplitViewButton" Click="SplitViewButton_Click"
+                                      CornerRadius="0,4,4,0" Margin="-1,0,0,0">
+                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                <SymbolIcon Symbol="TwoPage" />
+                                <TextBlock Text="Split" />
+                            </StackPanel>
+                        </ToggleButton>
+                    </StackPanel>
+                    <Button x:Name="EditQueryButton" Click="EditQuery_Click" IsEnabled="False">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <SymbolIcon Symbol="Edit" />
+                            <TextBlock Text="Edit query" />
+                        </StackPanel>
+                    </Button>
+                    <Button x:Name="ColumnsButton" Click="ColumnsButton_Click" IsEnabled="False">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <SymbolIcon Symbol="ViewAll" />
+                            <TextBlock Text="Columns" />
+                        </StackPanel>
+                        <Button.Flyout>
+                            <!-- Two lists, mirroring the web client's columns dialog (§3.1
+                                 "add, remove, and reorder"): the current columns, in order,
+                                 drag-reorderable and each removable — and a type-to-filter search
+                                 below it for adding more, rather than one long check-everything
+                                 list with no ordering control. -->
+                            <Flyout x:Name="ColumnsFlyout" Placement="Bottom">
+                                <StackPanel Spacing="8" Width="280">
+                                    <TextBlock Text="Current columns" FontWeight="SemiBold" />
+                                    <TextBlock Text="Drag to reorder" Opacity="0.6" FontSize="11" />
+                                    <ListView x:Name="CurrentColumnsList" MaxHeight="200"
+                                              SelectionMode="None" IsItemClickEnabled="False"
+                                              CanReorderItems="True" CanDragItems="True" AllowDrop="True">
+                                        <ListView.ItemTemplate>
+                                            <DataTemplate x:DataType="local:FieldPickerItem">
+                                                <Grid ColumnSpacing="6" Padding="0,2">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{x:Bind Name}"
+                                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                                    <Button Grid.Column="1" Content="✕" Padding="6,2" FontSize="11"
+                                                            Tag="{x:Bind Id}" Click="RemoveColumn_Click" />
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ListView.ItemTemplate>
+                                    </ListView>
+                                    <TextBox x:Name="ColumnsSearchBox" PlaceholderText="Search fields…"
+                                             TextChanged="ColumnsSearchBox_TextChanged" />
+                                    <ListView x:Name="ColumnsSearchResultsList" MaxHeight="160"
+                                              SelectionMode="None" IsItemClickEnabled="True"
+                                              ItemClick="ColumnsSearchResult_Click">
+                                        <ListView.ItemTemplate>
+                                            <DataTemplate x:DataType="local:FieldPickerItem">
+                                                <TextBlock Text="{x:Bind Name}" Padding="0,4" TextTrimming="CharacterEllipsis" />
+                                            </DataTemplate>
+                                        </ListView.ItemTemplate>
+                                    </ListView>
+                                    <StackPanel Orientation="Horizontal" Spacing="8">
+                                        <Button Content="Apply" Click="ApplyColumns_Click" Style="{StaticResource AccentButtonStyle}" />
+                                        <Button Content="Reset to default" Click="ResetColumns_Click" />
+                                    </StackPanel>
+                                </StackPanel>
+                            </Flyout>
+                        </Button.Flyout>
+                    </Button>
+                    <Button x:Name="RefreshButton" Click="Refresh_Click" IsEnabled="False">
+                        <StackPanel Orientation="Horizontal" Spacing="6">
+                            <SymbolIcon Symbol="Refresh" />
+                            <TextBlock Text="Refresh" />
+                        </StackPanel>
+                    </Button>
+
+                    <Rectangle Width="1" Height="20" Fill="{ThemeResource DividerStrokeColorDefaultBrush}" Margin="4,0" />
+
+                    <ComboBox x:Name="SortFieldCombo" PlaceholderText="Sort" Width="130" IsEnabled="False"
+                              DisplayMemberPath="Name" SelectionChanged="SortFieldCombo_SelectionChanged" />
+                    <ToggleButton x:Name="SortDirButton" Content="Desc" IsEnabled="False" Click="SortDirButton_Click" />
+
+                    <ComboBox x:Name="GroupFieldCombo" PlaceholderText="Group by" Width="130" IsEnabled="False"
+                              DisplayMemberPath="Name" SelectionChanged="GroupFieldCombo_SelectionChanged" />
+
+                    <TextBlock x:Name="FreshnessText" VerticalAlignment="Center" Opacity="0.65" FontSize="12" />
+                </StackPanel>
+            </Border>
+
+            <!-- Query editor: slides in as a panel from the top (§3.3) -->
+            <Border x:Name="QueryPanel" Grid.Row="1" Visibility="Collapsed"
+                    Background="{ThemeResource LayerFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,0,1"
+                    Padding="12">
+                <StackPanel Spacing="8">
+                    <!-- RichEditBox (not TextBox) — plain TextBox can't render mixed inline
+                         colors, and §3.3 requires "formatted, with basic syntax highlighting
+                         (keywords, fields, operators, strings distinguishable)". Filter-reference
+                         chips (§3.3.1) render inline in this same text, as literal "🔗 name" runs
+                         with pill-style character formatting — see MainWindow.xaml.cs for how. -->
+                    <local:JqlEditor x:Name="QueryTextBox"
+                                 FontFamily="Cascadia Mono, Consolas, monospace" MinHeight="90" MaxHeight="240"
+                                 PreviewKeyDown="QueryTextBox_PreviewKeyDown"
+                                 LostFocus="QueryTextBox_LostFocus"
+                                 AllowDrop="True"
+                                 DragOver="QueryTextBox_DragOver"
+                                 Drop="QueryTextBox_Drop" />
+
+                    <TextBlock x:Name="QueryErrors" Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                               TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="ApplyQueryButton" Content="Apply" Click="ApplyQuery_Click" Style="{StaticResource AccentButtonStyle}" />
+                        <Button Content="Cancel" Click="CancelQuery_Click" />
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <!-- Configuration / error banner -->
+            <InfoBar x:Name="ErrorBanner" Grid.Row="2" Severity="Error" IsOpen="False" IsClosable="False" />
+
+            <!-- Table view (§3.1) — thin rows, one per issue. Columns are configurable
+                 (Columns button), so header and rows both render a dynamic cell count via a
+                 nested ItemsControl per row rather than a fixed set of XAML-declared columns. -->
+            <Grid Grid.Row="3" x:Name="TableViewGrid" Visibility="Visible">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="12,6"
+                            Background="{ThemeResource LayerFillColorAltBrush}">
+                    <TextBlock Text="Key" FontWeight="SemiBold" Width="110" />
+                    <ItemsControl ItemsSource="{x:Bind ColumnLabels}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="x:String">
+                                <TextBlock Text="{x:Bind}" FontWeight="SemiBold" Width="160" Margin="0,0,12,0" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
+
+                <ListView x:Name="IssuesList" Grid.Row="1" SelectionMode="Single">
+                    <ListView.ItemTemplate>
+                        <!-- Group headers (§3.1) are ordinary IssueRows (Key="",
+                             IsGroupHeader = true) rendered through this same single template —
+                             not ListView.GroupStyle, not a second template picked by a
+                             DataTemplateSelector, and not two Visibility-toggled siblings sharing
+                             one template root. All three alternatives crash this environment's
+                             XAML compiler (Windows App SDK 1.6, no Visual Studio) outright, with
+                             no diagnostic beyond a bare nonzero exit code — see
+                             MainWindow.xaml.cs's IssueRow/ApplyGrouping comments. -->
+                        <DataTemplate x:DataType="local:IssueRow">
+                            <StackPanel Orientation="Horizontal" Padding="12,6">
+                                <!-- Key: always a clickable link to the issue's real Jira page (§3.1) -->
+                                <HyperlinkButton Content="{x:Bind Key}" Padding="0" Width="110"
+                                                 Tag="{x:Bind BrowseUrl}" Click="IssueLink_Click" />
+                                <TextBlock Text="{x:Bind GroupHeaderText}" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                <ItemsControl ItemsSource="{x:Bind Cells}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate x:DataType="local:CellValue">
+                                            <!-- Basic field types are editable in place (§3.1 v1):
+                                                 double-click opens a small text-edit flyout
+                                                 anchored on the cell itself. A single click acts
+                                                 only when the cell is a reference to another
+                                                 issue (§3.1) — IssueLink_Click no-ops when Tag
+                                                 (LinkUrl) is null, so the same TextBlock serves
+                                                 both plain and linked cells without a second
+                                                 template (see MainWindow.xaml.cs). -->
+                                            <TextBlock Text="{x:Bind Text}" Width="160" Margin="0,0,12,0"
+                                                       Foreground="{x:Bind TextBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       DoubleTapped="Cell_DoubleTapped"
+                                                       Tapped="CellLink_Tapped"
+                                                       Tag="{x:Bind LinkUrl}">
+                                                <FlyoutBase.AttachedFlyout>
+                                                    <Flyout Placement="Bottom">
+                                                        <StackPanel Spacing="8" Width="220">
+                                                            <TextBox x:Name="CellEditBox" KeyDown="CellEditBox_KeyDown" />
+                                                            <TextBlock Text="Enter to save, Esc to cancel" Opacity="0.6" FontSize="11" />
+                                                        </StackPanel>
+                                                    </Flyout>
+                                                </FlyoutBase.AttachedFlyout>
+                                            </TextBlock>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+            </Grid>
+
+            <!-- Split view (§3.2) — thick-row read-only issue list on the left, the issue's
+                 actual Jira page (fully interactive, all editing happens here) on the right. -->
+            <Grid x:Name="SplitViewGrid" Grid.Row="3" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="360" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+
+                <ListView x:Name="SplitIssuesList" Grid.Column="0" SelectionMode="Single"
+                          BorderThickness="0,0,1,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}"
+                          SelectionChanged="SplitIssuesList_SelectionChanged">
+                    <ListView.ItemTemplate>
+                        <!-- Group headers (§3.1) are ordinary IssueRows (Key="",
+                             IsGroupHeader = true) through this same single template — see the
+                             note by IssuesList's template for why, not ListView.GroupStyle etc. -->
+                        <DataTemplate x:DataType="local:IssueRow">
+                            <StackPanel Padding="12,10" Spacing="2"
+                                        BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+                                <TextBlock Text="{x:Bind GroupHeaderText}" FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Bind Key}" Foreground="{ThemeResource ChipBrush}" FontWeight="SemiBold" />
+                                <TextBlock Text="{x:Bind Summary}" TextWrapping="Wrap" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock Text="{x:Bind Status}" Opacity="0.7" FontSize="12" />
+                                    <TextBlock Text="{x:Bind Assignee}" Opacity="0.7" FontSize="12" />
+                                </StackPanel>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+
+                <Grid Grid.Column="1">
+                    <webview2:WebView2 x:Name="IssueWebView" />
+                    <TextBlock x:Name="SplitViewPlaceholder" Text="Select an issue to open its Jira page here."
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Opacity="0.6" />
+                </Grid>
+            </Grid>
+        </Grid>
+        </Grid>
+    </Grid>
+</Window>
