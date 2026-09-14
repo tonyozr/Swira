@@ -454,12 +454,13 @@ function renderFavourites(favourites) {
 }
 
 /// Sidebar → query editor drag source (spec §3.3.1): dropping this row into the query
-/// editor inserts a `filter = <id>` reference for it.
+/// editor inserts a `filter = <id>` reference for it; external targets receive that same
+/// canonical JQL through the standard plain-text payload.
 function makeDraggableFilterSource(row, filter) {
   row.draggable = true;
   row.ondragstart = (event) => {
     event.dataTransfer.setData("application/x-swira-filter", JSON.stringify(filter));
-    event.dataTransfer.setData("text/plain", filter.name);
+    event.dataTransfer.setData("text/plain", `filter = ${filter.id}`);
     event.dataTransfer.effectAllowed = "copy";
   };
   // Known ahead of any lookup — primes the chip cache so a dropped reference renders its
