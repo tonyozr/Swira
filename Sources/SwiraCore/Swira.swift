@@ -7,6 +7,11 @@ import Logging
 /// an auth provider, and a cache fit together.
 public struct Swira: Sendable {
     public let configuration: SwiraConfiguration
+    /// The credentials wired into every service call. Exposed alongside `configuration` for
+    /// callers that need to authorize a request of their own outside the REST services here —
+    /// e.g. `swira-web`'s Jira reverse proxy, which forwards arbitrary Jira paths rather than
+    /// going through `JiraClient`.
+    public let auth: AuthProvider
     public let filters: FiltersService
     public let jql: JQLService
     public let search: SearchService
@@ -58,6 +63,7 @@ public struct Swira: Sendable {
         let deployment = configuration.site.deployment
 
         self.configuration = configuration
+        self.auth = auth
         self.client = client
         self.filters = FiltersService(client: client, deployment: deployment)
         self.jql = JQLService(client: client, deployment: deployment)

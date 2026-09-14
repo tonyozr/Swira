@@ -268,9 +268,12 @@
     padding: 8px 14px; font-size: 12px; display: none; }
   dialog { border: 1px solid var(--border); border-radius: 10px; padding: 16px;
     min-width: 380px; box-shadow: 0 12px 40px rgba(0,0,0,.18); }
+  /* The global `* { margin: 0 }` reset above zeroes the UA stylesheet's `margin: auto` — the
+     mechanism a plain, un-anchored `showModal()` would otherwise center itself with — so a
+     non-anchored dialog needs its own explicit centering here instead. */
+  dialog:not(.anchored) { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); }
   /* Anchored dialogs (spec: opened near the button that triggered them, not centered in a
-     possibly much larger window) override the UA stylesheet's `margin: auto` centering with an
-     explicit position set in JS before showModal(). */
+     possibly much larger window) get an explicit position set in JS before showModal() instead. */
   dialog.anchored { margin: 0; }
   dialog::backdrop { background: rgba(0,0,0,.2); }
   dialog label { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 3px; }
@@ -351,7 +354,20 @@
             <span id="issue-pane-key"></span>
             <a id="issue-pane-open" target="_blank" rel="noopener">Open in Jira ↗</a>
           </div>
-          <iframe id="issue-frame" style="display:none"></iframe>
+          <!-- No allow-top-navigation(-by-user-activation): Jira's own client bundle, on seeing
+               it's framed, navigates window.top (not itself) straight to Atlassian SSO — a
+               same-origin top-navigation our proxy origin can't tell apart from a legitimate one,
+               so without this it takes the whole app's tab with it, not just this pane. Sandbox
+               is the only thing that blocks it: it's plain `location = url` assignment, which no
+               script (ours or Jira's own) can intercept in any frame, unlike the self-navigation
+               case JiraProxy's injected guard script catches. Everything else stays permissive —
+               split view is meant to be fully interactive. -->
+          <iframe
+            id="issue-frame"
+            style="display:none"
+            sandbox="allow-scripts allow-same-origin allow-forms allow-popups
+                     allow-popups-to-escape-sandbox allow-modals allow-downloads"
+          ></iframe>
           <div class="placeholder" id="issue-pane-placeholder">Select an issue.</div>
         </div>
       </div>
@@ -389,6 +405,15 @@
     <div class="actions">
       <button id="new-cancel">Cancel</button>
       <button class="primary" id="new-ok">Create</button>
+    </div>
+  </dialog>
+
+  <dialog id="dlg-external-redirect">
+    <b>Jira wants to open another site</b>
+    <p id="external-redirect-message"></p>
+    <div class="actions">
+      <button id="external-redirect-cancel">Cancel</button>
+      <button class="primary" id="external-redirect-open">Open in new window</button>
     </div>
   </dialog>
 
@@ -1464,17 +1489,170 @@ function applyColumnsResult(result) {
   renderContent();
 }
 
+// The current issue's real Jira URL — the fallback target offered when the embedded page
+// escapes the frame by a means nothing here can intercept (see frameEscapeGuard below).
+let currentIssueBrowseUrl = null;
+// Set right before we ourselves reset the frame's src, so that reset's own `load` event isn't
+// mistaken for a second escape.
+let suppressFrameEscapeCheck = false;
+// The current issue's page, as HTML, kept fresh by the `message` listener below (pushed by
+// JiraProxy's own injected script running inside the frame — see its snapshotBroadcastScript for
+// why a push from inside beats the parent reading contentDocument after the fact).
+let lastGoodIssueSnapshot = null;
+
+const DEFAULT_ISSUE_PLACEHOLDER_TEXT = $("issue-pane-placeholder").textContent;
+
 function showIssue(issue) {
-  $("issue-pane-placeholder").style.display = "none";
+  const placeholder = $("issue-pane-placeholder");
+  placeholder.textContent = DEFAULT_ISSUE_PLACEHOLDER_TEXT;
+  placeholder.style.display = "none";
   $("issue-pane-bar").style.display = "flex";
   $("issue-pane-key").textContent = issue.key;
   $("issue-pane-open").href = issue.browseUrl;
-  // The real Jira page, fully interactive (spec §3.2). Jira instances that forbid framing
-  // (X-Frame-Options) render blank — the "Open in Jira" link stays as the guaranteed path.
+  currentIssueBrowseUrl = issue.browseUrl;
+  lastGoodIssueSnapshot = null;
+  // The real Jira page, fully interactive (spec §3.2) — loaded through our own server's Jira
+  // proxy rather than Jira's origin directly (issue.browseUrl), which cross-origin restrictions
+  // and X-Frame-Options would otherwise block from an iframe. The proxy serves the same path
+  // under our origin and adds the auth header itself; "Open in Jira" still links to the real URL.
+  // A redirect the page makes to a different site entirely (Atlassian SSO, typically) is meant to
+  // be caught before it happens — the proxy's own `message` bridge for a redirect it sees itself,
+  // or the guard script it injects for one the page's own JS triggers — but neither can catch a
+  // raw `location = url`/`location.href = url` assignment; no script anywhere can, in any frame.
+  // frameEscapeGuard below is the fallback for exactly that: it can't stop the navigation, but it
+  // notices right after and offers the same dialog instead of leaving a broken foreign page framed.
+  // This assignment's own `load` is deliberately NOT suppressed — it's the one legitimate,
+  // same-origin load frameEscapeGuard needs to see, to snapshot the page while it's still there.
   const frame = $("issue-frame");
   frame.style.display = "";
-  frame.src = issue.browseUrl;
+  // A previous issue's escape may have left `srcdoc` set (frameEscapeGuard's frozen-snapshot
+  // fallback) — `srcdoc` takes priority over `src` per spec whenever both are present, so
+  // without clearing it here, assigning `src` below would silently do nothing and this frame
+  // would keep showing that stale snapshot no matter which issue gets selected next.
+  frame.removeAttribute("srcdoc");
+  const browseUrl = new URL(issue.browseUrl);
+  frame.src = browseUrl.pathname + browseUrl.search;
 }
+
+// The redirect target itself (typically Atlassian SSO) isn't something worth offering the user
+// as a destination — it's a mid-flight hop, not somewhere they meant to go, and it only ever
+// leads back to the same issue anyway (the SSO URL's own `continue=` parameter, when there is
+// one, points right back at it). So regardless of which of the three ways
+// (`message` bridge, injected guard script, or the frameEscapeGuard fallback below) noticed the
+// redirect, the dialog offers the one destination that actually answers "where did I want to go":
+// the issue's real Jira page, same as "Open in Jira" already links to.
+function showExternalRedirectDialog() {
+  if (!currentIssueBrowseUrl) return;
+  pendingExternalRedirectUrl = currentIssueBrowseUrl;
+  $("external-redirect-message").textContent =
+    "The Jira page in Split View tried to leave the embedded view (likely a sign-in redirect). " +
+    "Open the issue in Jira directly instead?";
+  $("dlg-external-redirect").showModal();
+}
+
+// Strips <script> tags (the copy must not be able to try navigating again — it isn't live
+// content any more) and points a <base> at the issue's real Jira URL, so the copy's relative
+// asset references (styles, icons) still resolve against Jira's real host instead of 404ing
+// against this one. String-level, not a DOM parse — matches how JiraProxy's own body rewriting
+// on the server side works, for the same reason: best-effort is enough for a frozen fallback.
+function prepareSnapshot(html, browseUrl) {
+  const withoutScripts = html.replace(/<script[\s\S]*?<\/script>/gi, "");
+  const headMatch = /<head[^>]*>/i.exec(withoutScripts);
+  if (!headMatch) return withoutScripts;
+  const insertAt = headMatch.index + headMatch[0].length;
+  const escapedUrl = browseUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+  return (
+    withoutScripts.slice(0, insertAt) +
+    `<base href="${escapedUrl}">` +
+    withoutScripts.slice(insertAt)
+  );
+}
+
+// True when `url` points at the same issue page already showing (origin + path; query/hash
+// ignored, since a bounced-back SSO URL commonly carries its own extra params on the way back).
+// A navigation attempt to that URL isn't actually going anywhere new, whatever it looks like from
+// the inside — no reason to interrupt the user over it, so it's just silently dropped rather than
+// prompted on like a real external redirect.
+function isSelfRedirect(url) {
+  if (!currentIssueBrowseUrl) return false;
+  try {
+    const target = new URL(url, window.location.href);
+    const current = new URL(currentIssueBrowseUrl);
+    return target.origin === current.origin && target.pathname === current.pathname;
+  } catch (e) {
+    return false;
+  }
+}
+
+let pendingExternalRedirectUrl = null;
+window.addEventListener("message", (event) => {
+  if (event.origin !== window.location.origin || !event.data) return;
+  if (event.data.swiraExternalRedirect) {
+    if (isSelfRedirect(event.data.swiraExternalRedirect)) return;
+    showExternalRedirectDialog();
+  } else if (typeof event.data.swiraSnapshot === "string" && currentIssueBrowseUrl) {
+    // Pushed by JiraProxy's injected script (see snapshotBroadcastScript there for why this has
+    // to be a push from inside the frame rather than the parent reading contentDocument on the
+    // frame's own `load` — by the time `load` fires, in practice, it can already be too late).
+    // Every issue's page keeps re-sending this as it renders further, so this simply keeps
+    // overwriting with the freshest one — whichever happened to be current is what frameEscapeGuard
+    // falls back to if the page turns out to navigate itself away.
+    lastGoodIssueSnapshot = prepareSnapshot(event.data.swiraSnapshot, currentIssueBrowseUrl);
+  }
+});
+$("external-redirect-cancel").onclick = () => $("dlg-external-redirect").close();
+$("external-redirect-open").onclick = () => {
+  if (pendingExternalRedirectUrl) window.open(pendingExternalRedirectUrl, "_blank", "noopener");
+  $("dlg-external-redirect").close();
+};
+
+// Reading a same-origin frame's own location never throws; reading a cross-origin one always
+// does (that's the browser's actual security boundary, not a heuristic) — so this `load` handler
+// firing with that throwing is a reliable, if after-the-fact, signal that the frame just navigated
+// itself somewhere this proxy never served.
+//
+// Confirmed live: this is the path Jira Cloud's own SSO check actually takes (a raw
+// `location = url` assignment, not `.assign()`/`.replace()`), so it's this handler — not
+// `isSelfRedirect` above, which only ever sees a URL when the *message* bridge is what caught
+// the redirect — that has to deal with the common case of the destination bouncing right back to
+// this same issue (a `prompt=none` SSO check that happens to succeed does exactly that). But
+// unlike the message bridge, this path never learns the destination URL at all — reading
+// anything about a cross-origin frame's location is the exact thing the browser blocks — so
+// there is no way to tell a genuine external redirect apart from one that's headed straight back
+// here. Rather than prompt on a coin flip, this recovers silently every time: the frozen snapshot
+// (or the placeholder, lacking one) plus the always-visible "Open in Jira" bar is already the
+// answer to "where do I go for the real thing", without asking first.
+$("issue-frame").addEventListener("load", () => {
+  const frame = $("issue-frame");
+  if (suppressFrameEscapeCheck) {
+    suppressFrameEscapeCheck = false;
+    return;
+  }
+  try {
+    void frame.contentWindow.location.href;
+  } catch (e) {
+    suppressFrameEscapeCheck = true;
+    if (lastGoodIssueSnapshot) {
+      // A frozen, non-interactive copy of the page as it last looked — not the live original
+      // (nothing can keep that; the frame has already navigated away from it for good), but
+      // closer to "the document stayed put" than a blank pane or a plain error message.
+      frame.removeAttribute("src");
+      frame.srcdoc = lastGoodIssueSnapshot;
+      frame.style.display = "";
+    } else {
+      frame.src = "about:blank";
+      // Hide the now-blank frame behind the placeholder rather than leaving a blank white pane
+      // with no explanation — "Open in Jira" (the bar above) reaches the issue either way; this
+      // is just what's left of the embedded attempt.
+      frame.style.display = "none";
+      const placeholder = $("issue-pane-placeholder");
+      placeholder.textContent =
+        "This issue's page left the embedded view before it finished loading — use “Open in " +
+        "Jira” above to view it.";
+      placeholder.style.display = "";
+    }
+  }
+});
 
 /* ---------- Query editor (spec §3.3, §3.3.1) ---------- */
 //

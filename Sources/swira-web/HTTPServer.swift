@@ -31,13 +31,31 @@ final class HTTPServer: @unchecked Sendable {
         let method: String
         let path: String
         let query: [String: String]
+        /// The request-target exactly as it appeared on the wire (e.g. `/secure/foo?bar=baz`),
+        /// before the path/query split and percent-decoding above. The Jira reverse proxy
+        /// (`JiraProxy`) forwards this verbatim rather than reassembling it from `path`/`query`,
+        /// which would risk re-encoding it differently than the browser did.
+        let rawTarget: String
+        /// Every header line, in the order the client sent them. A dictionary would lose
+        /// duplicates (a client sending two `Cookie` lines, say) and — since HTTP header names
+        /// are case-insensitive — force a normalization choice; look up with `header(_:)`.
+        let headers: [(name: String, value: String)]
         let body: Data
+
+        func header(_ name: String) -> String? {
+            let lowered = name.lowercased()
+            return headers.first { $0.name.lowercased() == lowered }?.value
+        }
     }
 
     struct Response {
         var status: Int
         var contentType: String
         var body: Data
+        /// Extra headers beyond `Content-Type`/`Content-Length` (always sent) and `Cache-Control`/
+        /// `Connection` (fixed below) — e.g. a proxied `Location` or `Set-Cookie`. An array, not a
+        /// dictionary, so a repeated header (multiple `Set-Cookie` lines) survives.
+        var headers: [(name: String, value: String)] = []
 
         static func json(_ data: Data, status: Int = 200) -> Response {
             Response(status: status, contentType: "application/json; charset=utf-8", body: data)
@@ -201,6 +219,9 @@ final class HTTPServer: @unchecked Sendable {
         head += "Content-Type: \(response.contentType)\r\n"
         head += "Content-Length: \(response.body.count)\r\n"
         head += "Cache-Control: no-store\r\n"
+        for (name, value) in response.headers {
+            head += "\(name): \(value)\r\n"
+        }
         head += "Connection: close\r\n\r\n"
 
         var payload = Data(head.utf8)
@@ -239,10 +260,15 @@ final class HTTPServer: @unchecked Sendable {
         let target = parts[1]
 
         var contentLength = 0
+        var headerLines: [(name: String, value: String)] = []
         for line in lines {
             let pair = line.split(separator: ":", maxSplits: 1)
-            if pair.count == 2, pair[0].lowercased() == "content-length" {
-                contentLength = Int(pair[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            guard pair.count == 2 else { continue }
+            let name = String(pair[0])
+            let value = pair[1].trimmingCharacters(in: .whitespaces)
+            headerLines.append((name, value))
+            if name.lowercased() == "content-length" {
+                contentLength = Int(value) ?? 0
             }
         }
 
@@ -269,7 +295,9 @@ final class HTTPServer: @unchecked Sendable {
             }
         }
 
-        return Request(method: method, path: path, query: query, body: body)
+        return Request(
+            method: method, path: path, query: query, rawTarget: target, headers: headerLines, body: body
+        )
     }
 
     private func statusText(_ status: Int) -> String {
