@@ -248,8 +248,7 @@ struct WebAPI: Sendable {
                 } else {
                     try await swira.issue.setTimeTracking(
                         issueKey: key,
-                        originalEstimate: body.value ?? body.originalEstimate,
-                        remainingEstimate: body.remainingEstimate
+                        originalEstimate: body.value ?? body.originalEstimate
                     )
                 }
             default:

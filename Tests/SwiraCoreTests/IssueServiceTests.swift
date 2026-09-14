@@ -139,6 +139,28 @@ struct IssueServiceTests {
         #expect(body.path("fields.timetracking.remainingEstimate") == .string("4h"))
     }
 
+    @Test("Setting original estimate leaves remaining estimate untouched")
+    func setsOriginalEstimateIndependently() async throws {
+        let mock = MockTransport(stubs: [.status(204)])
+        try await makeService(mock).setTimeTracking(issueKey: "SW-1", originalEstimate: "1d 2h")
+
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body.path("fields.timetracking.originalEstimate") == .string("1d 2h"))
+        #expect(body.path("fields.timetracking.remainingEstimate") == nil)
+    }
+
+    @Test("Setting remaining estimate leaves original estimate untouched")
+    func setsRemainingEstimateIndependently() async throws {
+        let mock = MockTransport(stubs: [.status(204)])
+        try await makeService(mock).setTimeTracking(issueKey: "SW-1", remainingEstimate: "4h")
+
+        let request = try #require(await mock.recorded.first)
+        let body = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
+        #expect(body.path("fields.timetracking.remainingEstimate") == .string("4h"))
+        #expect(body.path("fields.timetracking.originalEstimate") == nil)
+    }
+
     @Test("Clearing timetracking estimate sends null")
     func clearsTimeTrackingEstimate() async throws {
         let mock = MockTransport(stubs: [.status(204)])
