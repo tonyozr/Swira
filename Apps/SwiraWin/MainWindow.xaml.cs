@@ -429,8 +429,8 @@ public sealed partial class MainWindow : Window
                 if (matchingField is not null)
                 {
                     _sortField = matchingField.Id;
-                    _sortDescending = !string.Equals(
-                        match.Groups["direction"].Value, "asc", StringComparison.OrdinalIgnoreCase
+                    _sortDescending = string.Equals(
+                        match.Groups["direction"].Value, "desc", StringComparison.OrdinalIgnoreCase
                     );
                 }
             }
