@@ -459,7 +459,7 @@ function makeDraggableFilterSource(row, filter) {
   row.draggable = true;
   row.ondragstart = (event) => {
     event.dataTransfer.setData("application/x-swira-filter", JSON.stringify(filter));
-    event.dataTransfer.setData("text/plain", filter.name);
+    event.dataTransfer.setData("text/plain", `filter = ${filter.id}`);
     event.dataTransfer.effectAllowed = "copy";
   };
   // Known ahead of any lookup — primes the chip cache so a dropped reference renders its

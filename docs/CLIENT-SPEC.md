@@ -240,8 +240,10 @@ modes**, with a persistent per-filter choice. A toolbar switcher toggles between
   the filter it points to, not only a way to change what it points to.
 - **Dragging a filter from the sidebar into the query editor** MUST insert a `filter = <id>`
   reference for it, which then renders as the same chip described above. This is the
-  sidebar-to-editor path the chip mechanism exists to support. Where and how it's joined
-  depends on where in the query the drop actually landed, not just appended blindly to the end:
+  sidebar-to-editor path the chip mechanism exists to support. The standard plain-text drag
+  payload MUST also be `filter = <id>`, so a drop outside the editor receives valid JQL rather
+  than the filter name. Where and how it's joined depends on where in the query the drop actually
+  landed, not just appended blindly to the end:
   - **The insertion point is the drop location itself.** Dropping inside a parenthesized group
     inserts the condition into that group, not at the outermost level of the query — e.g.
     dropping between `priority = High OR ` and the closing paren of
