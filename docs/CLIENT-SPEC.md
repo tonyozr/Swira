@@ -176,6 +176,56 @@ modes**, with a persistent per-filter choice. A toolbar switcher toggles between
     Jira page, fully interactive — **all editing in split view happens here**, in Jira's
     own UI. Platforms that cannot embed a web view (terminal) MUST show a read-only issue
     rendering in the right pane and offer opening the issue in the system browser.
+  - A web-based client MUST NOT point the embedded view at Jira's origin directly — the
+    browser's cross-origin restrictions (and, on many instances, `X-Frame-Options`/CSP
+    `frame-ancestors`) block it. Instead it routes the view through a same-origin reverse
+    proxy the client itself serves, which forwards the request to Jira, adds the auth
+    header, and rewrites any absolute references back to Jira's origin in the response so
+    follow-up requests (assets, links, redirects) stay proxied too. `swira-web`'s
+    implementation (`JiraProxy`) forwards whatever path the embedded page actually uses —
+    it isn't limited to one fixed prefix.
+  - A redirect the proxy receives that stays on Jira's own host is followed server-side, not
+    relayed to the frame (which would otherwise visibly navigate away, e.g. to a bare login
+    page on a lapsed session). A redirect that leaves Jira's host entirely — most commonly
+    an SSO provider — MUST NOT be followed (that would hand the other site Jira's auth
+    header) or relayed as a raw cross-origin redirect either; the client instead offers to
+    open it in a new window/tab, leaving the split view itself alone. A caught redirect
+    whose target is the same issue page already showing (an SSO round trip commonly bounces
+    back to exactly where it started) is not a real "leaving" event, so it's simply dropped
+    rather than prompted on — the split view is already showing that page.
+  - Jira Cloud specifically does not treat header-based auth as a browser session: its
+    client-side bundle, on finding no session, navigates away on its own — and since it
+    detects it's framed, it targets the *top* browsing context, not just its own frame.
+    Because the embedded view shares an origin with the rest of the app (by construction,
+    per the point above), the browser does not distinguish that from a legitimate
+    same-origin top-navigation, so without a guard it takes the whole app's window with it,
+    not just the split-view pane. The frame embedding it MUST therefore withhold top-level
+    navigation (e.g. an iframe's `sandbox` without `allow-top-navigation`/
+    `allow-top-navigation-by-user-activation`) so such an attempt is blocked outright.
+    Self-navigation (the framed page redirecting only itself, e.g. via `location.assign`/
+    `location.replace`, a plain link, or `window.open`) is not blocked by sandboxing — it
+    never can be, a frame is always allowed to navigate itself — so it MUST instead be
+    intercepted before it happens and routed through the same external-redirect prompt
+    described above. Neither of those catches a *raw* `location = url` /
+    `location.href = url` assignment: no script, in any frame, can intercept that specific
+    form — it is a platform guarantee, not a gap in a particular implementation. A web
+    client MUST therefore also detect it after the fact: reading a same-origin frame's own
+    `location` never throws, reading one that has just navigated cross-origin always does —
+    a reliable signal, though the frame's `load` event fires too late to check it against in
+    practice (Jira Cloud's own session check finishes and redirects before every subresource
+    the framed page pulls in has, which is what `load` waits for). Recovery therefore needs a
+    standing snapshot of the framed page to fall back to that isn't read after the fact
+    either: the proxy's own injected script (present for the reasons above) pushes a copy of
+    the page outward on its own, as early as `DOMContentLoaded` and periodically after, so
+    one is already on hand — stripped of scripts, so it cannot itself try to navigate away —
+    the moment a self-navigation is caught. Recovery uses that snapshot in the frame in place
+    of a blank pane when one is available. Unlike a redirect caught with its destination URL
+    known (the point above), this recovery path MUST NOT prompt: a raw assignment's
+    destination is exactly as unreadable as everything else about a cross-origin frame, so
+    there is no way to tell a genuine external redirect apart from a bounce back to the same
+    issue (the common case for a `prompt=none` SSO check that happens to succeed) — prompting
+    on a coin flip is worse than staying quiet and simply showing the snapshot (or the
+    placeholder, lacking one); "Open in Jira" is already the answer either way.
 - Row-height rule holds across implementations: table rows thin, split-list rows thick.
 
 ### 3.3 Query editor
@@ -240,8 +290,10 @@ modes**, with a persistent per-filter choice. A toolbar switcher toggles between
   the filter it points to, not only a way to change what it points to.
 - **Dragging a filter from the sidebar into the query editor** MUST insert a `filter = <id>`
   reference for it, which then renders as the same chip described above. This is the
-  sidebar-to-editor path the chip mechanism exists to support. Where and how it's joined
-  depends on where in the query the drop actually landed, not just appended blindly to the end:
+  sidebar-to-editor path the chip mechanism exists to support. The standard plain-text drag
+  payload MUST also be `filter = <id>`, so a drop outside the editor receives valid JQL rather
+  than the filter name. Where and how it's joined depends on where in the query the drop actually
+  landed, not just appended blindly to the end:
   - **The insertion point is the drop location itself.** Dropping inside a parenthesized group
     inserts the condition into that group, not at the outermost level of the query — e.g.
     dropping between `priority = High OR ` and the closing paren of

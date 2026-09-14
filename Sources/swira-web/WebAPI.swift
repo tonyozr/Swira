@@ -9,6 +9,15 @@ struct WebAPI: Sendable {
     let swira: Swira?
     /// Why `swira` is nil, when it is — shown by the UI as a setup banner.
     let configurationError: String?
+    /// Proxies Split View's embedded Jira page through our own origin (see `JiraProxy`). `nil`
+    /// alongside `swira` when there are no credentials to authorize proxied requests with.
+    private let proxy: JiraProxy?
+
+    init(swira: Swira?, configurationError: String?) {
+        self.swira = swira
+        self.configurationError = configurationError
+        self.proxy = swira.map { JiraProxy(site: $0.configuration.site, auth: $0.auth) }
+    }
 
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -248,8 +257,7 @@ struct WebAPI: Sendable {
                 } else {
                     try await swira.issue.setTimeTracking(
                         issueKey: key,
-                        originalEstimate: body.value ?? body.originalEstimate,
-                        remainingEstimate: body.remainingEstimate
+                        originalEstimate: body.value ?? body.originalEstimate
                     )
                 }
             default:
@@ -338,6 +346,16 @@ struct WebAPI: Sendable {
                 description: body.description
             )
             return try json(FilterDetailDTO(filter: FilterDTO(created), meta: nil))
+        }
+
+        // Anything else is Split View's embedded Jira page (docs/CLIENT-SPEC.md §3.2) asking for
+        // a Jira path directly — the browser loads the issue frame from our own origin (see
+        // JiraProxy), not Jira's, so its requests land here rather than at `/api/...`.
+        if segments.first != "api" {
+            guard let proxy else {
+                return errorResponse(configurationError ?? "Jira is not configured.", status: 424)
+            }
+            return await proxy.handle(request)
         }
 
         return .notFound()
