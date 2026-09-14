@@ -112,6 +112,7 @@ public sealed partial class MainWindow : Window
     private List<FieldRefDto>? _allFields;
     private string _sortField = "updated";
     private bool _sortDescending = true;
+    private bool _syncingSortControls;
     private string? _groupField;
     private List<IssueDto> _lastIssues = [];
     private List<IssueRow> _lastRows = [];
@@ -374,6 +375,8 @@ public sealed partial class MainWindow : Window
     {
         var filter = FindFilter(filterId);
         _selectedFilter = filter;
+        _sortField = "updated";
+        _sortDescending = true;
         FilterTitle.Text = filter?.Name ?? filterId;
         EditQueryButton.IsEnabled = true;
         ColumnsButton.IsEnabled = true;
@@ -382,6 +385,7 @@ public sealed partial class MainWindow : Window
         SortDirButton.IsEnabled = true;
         GroupFieldCombo.IsEnabled = true;
         await EnsureSortGroupFieldsLoadedAsync();
+        ApplyFilterSort(filter?.Jql);
         ClearIssuePage();
         await LoadIssuesAsync(filterId);
     }
@@ -402,9 +406,44 @@ public sealed partial class MainWindow : Window
         }
         var sorted = _allFields.OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase).ToList();
         SortFieldCombo.ItemsSource = sorted;
-        SortFieldCombo.SelectedItem = sorted.FirstOrDefault(f => f.Id == _sortField);
+        SetSortControls();
         GroupFieldCombo.ItemsSource = new List<FieldRefDto> { new() { Id = "", Name = "None" } }.Concat(sorted).ToList();
         GroupFieldCombo.SelectedIndex = 0;
+    }
+
+    /// Restores the first saved ORDER BY term when opening a filter. The toolbar only represents
+    /// one term, so additional terms remain in the filter's JQL but cannot be shown there.
+    private void ApplyFilterSort(string? jql)
+    {
+        if (jql is not null && _allFields is not null)
+        {
+            var match = FilterSortPattern.Match(jql);
+            if (match.Success)
+            {
+                var field = match.Groups["quotedField"].Success
+                    ? match.Groups["quotedField"].Value
+                    : match.Groups["field"].Value;
+                var matchingField = _allFields.FirstOrDefault(candidate =>
+                    string.Equals(candidate.Id, field, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(candidate.Name, field, StringComparison.OrdinalIgnoreCase));
+                if (matchingField is not null)
+                {
+                    _sortField = matchingField.Id;
+                    _sortDescending = !string.Equals(
+                        match.Groups["direction"].Value, "asc", StringComparison.OrdinalIgnoreCase
+                    );
+                }
+            }
+        }
+        SetSortControls();
+    }
+
+    private void SetSortControls()
+    {
+        _syncingSortControls = true;
+        SortFieldCombo.SelectedItem = _allFields?.FirstOrDefault(f => f.Id == _sortField);
+        SortDirButton.Content = _sortDescending ? "↓ Desc" : "↑ Asc";
+        _syncingSortControls = false;
     }
 
     private FilterDto? FindFilter(string id)
@@ -1032,7 +1071,7 @@ public sealed partial class MainWindow : Window
 
     private async void SortFieldCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (SortFieldCombo.SelectedItem is not FieldRefDto field || _selectedFilter is null) return;
+        if (_syncingSortControls || SortFieldCombo.SelectedItem is not FieldRefDto field || _selectedFilter is null) return;
         _sortField = field.Id;
         await LoadIssuesAsync(_selectedFilter.Id);
     }
@@ -1119,6 +1158,10 @@ public sealed partial class MainWindow : Window
 
     private static readonly Regex TopLevelInPattern = new(@"\b(not\s+)?in\s*$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex OrderByTailPattern = new(@"\s*(\border\s+by\s+.+)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex FilterSortPattern = new(
+        @"\border\s+by\s+(?:""(?<quotedField>[^""]+)""|(?<field>[A-Za-z0-9_\[\]]+))(?:\s+(?<direction>asc|desc))?(?:\s*,|$)",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled
+    );
     // \G (not ^) — Match(expr, i) only tells the engine where to *start scanning*; ^ still
     // anchors to true position 0 of the whole string, so with ^ this pattern only ever matched
     // when i == 0 and SplitTopLevelJql silently never split on AND/OR at all. \G anchors to the
