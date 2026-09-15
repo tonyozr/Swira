@@ -1305,7 +1305,16 @@ async function activateCellEditor(cell) {
     const apply = () => {
       const val = input.value.trim();
       finish();
-      saveCellEdit(cell, key, { kind: "estimate", fieldId, value: val || null }, original);
+      // The sibling estimate (whichever of originalEstimate/remainingEstimate isn't being
+      // edited here) is deliberately *not* included from this client-side `tracking` snapshot:
+      // it can be stale or entirely missing (e.g. right after adding an estimate column that
+      // wasn't previously fetched -- columns changes don't force a reload). The server reads
+      // the current value fresh from Jira instead, so Jira's own timetracking auto-adjust (see
+      // JRASERVER-30459 / JRACLOUD-67539) has nothing left to guess at.
+      // `value` is sent as `""` rather than `null` when clearing: the server tells "clear this
+      // estimate" (empty string) apart from "don't touch this estimate" (key absent/null) by
+      // that distinction -- see the "estimate" case in WebAPI.swift.
+      saveCellEdit(cell, key, { kind: "estimate", fieldId, value: val }, original);
     };
 
     picker.querySelector(".btn-cancel").onclick = () => {

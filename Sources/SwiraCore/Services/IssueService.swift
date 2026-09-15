@@ -88,7 +88,19 @@ public actor IssueService {
     /// Sets time tracking estimates on an issue.
     ///
     /// Jira supports duration strings such as `"1d"`, `"2h 30m"`, `"1w"`.
-    /// Passing `nil` or empty string clears the respective estimate.
+    /// Passing `nil` leaves the respective estimate untouched; passing an empty string clears it.
+    ///
+    /// Identical quirk on both deployments: when only one of the two estimates is present in the
+    /// `timetracking` payload, Jira itself (not this method) silently auto-adjusts the other one
+    /// from the pair's prior ratio, rather than leaving it alone — see JRASERVER-30459 /
+    /// JRACLOUD-67539. This method has no way to "leave the other one alone" on Jira's behalf: it
+    /// only controls what's *in* the payload. A caller editing a single estimate must pass both
+    /// here (the untouched one set to its current value) for Jira to have nothing left to
+    /// auto-adjust — and that current value has to come from *somewhere*: `currentTimeTracking`
+    /// below fetches it fresh from Jira right before the update, rather than trusting whatever a
+    /// caller has cached client-side, which may predate the caller's own last load or may never
+    /// have been fetched at all. See `WebAPI`'s `estimate` edit kind for the read-then-merge
+    /// pattern this enables.
     public func setTimeTracking(
         issueKey: String,
         originalEstimate: String? = nil,
@@ -105,6 +117,21 @@ public actor IssueService {
         }
         guard !timetracking.isEmpty else { return }
         try await updateFields(issueKey: issueKey, fields: ["timetracking": .object(timetracking)])
+    }
+
+    /// The issue's current original/remaining estimate, read fresh from Jira.
+    ///
+    /// Exists so a caller editing just one of the two estimates can learn the other's actual,
+    /// up-to-date value immediately before calling `setTimeTracking` with both — see that
+    /// method's doc comment for why relying on a client-cached value isn't good enough.
+    public func currentTimeTracking(
+        issueKey: String
+    ) async throws -> (originalEstimate: String?, remainingEstimate: String?) {
+        let response = try await client.send(
+            IssueEndpoints.get(key: issueKey, fields: ["timetracking"]),
+            as: TimeTrackingFieldResponse.self
+        )
+        return (response.fields.timetracking?.originalEstimate, response.fields.timetracking?.remainingEstimate)
     }
 
     /// The transitions currently available for this issue, given its status and workflow.

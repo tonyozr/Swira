@@ -171,6 +171,53 @@ struct IssueServiceTests {
         #expect(body.path("fields.timetracking.originalEstimate")?.isNull == true)
     }
 
+    @Test("Independent estimate edits use the same timetracking shape on Data Center as on Cloud")
+    func setsEstimatesIndependentlyOnDataCenter() async throws {
+        let originalMock = MockTransport(stubs: [.status(204)])
+        try await makeService(originalMock, deployment: .dataCenter)
+            .setTimeTracking(issueKey: "SW-1", originalEstimate: "1d 2h")
+
+        let originalRequest = try #require(await originalMock.recorded.first)
+        let originalBody = try JSONDecoder().decode(JSONValue.self, from: try #require(originalRequest.body))
+        #expect(originalBody.path("fields.timetracking.originalEstimate") == .string("1d 2h"))
+        #expect(originalBody.path("fields.timetracking.remainingEstimate") == nil)
+
+        let remainingMock = MockTransport(stubs: [.status(204)])
+        try await makeService(remainingMock, deployment: .dataCenter)
+            .setTimeTracking(issueKey: "SW-1", remainingEstimate: "4h")
+
+        let remainingRequest = try #require(await remainingMock.recorded.first)
+        let remainingBody = try JSONDecoder().decode(JSONValue.self, from: try #require(remainingRequest.body))
+        #expect(remainingBody.path("fields.timetracking.remainingEstimate") == .string("4h"))
+        #expect(remainingBody.path("fields.timetracking.originalEstimate") == nil)
+    }
+
+    @Test("currentTimeTracking reads both estimates fresh from Jira via a fields-scoped GET")
+    func readsCurrentTimeTracking() async throws {
+        let mock = MockTransport(json: """
+        {"fields": {"timetracking": {"originalEstimate": "1d", "remainingEstimate": "3h"}}}
+        """)
+        let current = try await makeService(mock).currentTimeTracking(issueKey: "SW-1")
+
+        let request = try #require(await mock.recorded.first)
+        #expect(request.method == .get)
+        #expect(request.path == "issue/SW-1")
+        #expect(request.queryItems.first(where: { $0.name == "fields" })?.value == "timetracking")
+        #expect(current.originalEstimate == "1d")
+        #expect(current.remainingEstimate == "3h")
+    }
+
+    @Test("currentTimeTracking tolerates an issue with no timetracking set at all")
+    func readsCurrentTimeTrackingWhenAbsent() async throws {
+        let mock = MockTransport(json: """
+        {"fields": {"timetracking": {}}}
+        """)
+        let current = try await makeService(mock).currentTimeTracking(issueKey: "SW-1")
+
+        #expect(current.originalEstimate == nil)
+        #expect(current.remainingEstimate == nil)
+    }
+
     @Test("A field update never touches fields the caller didn't mention")
     func onlyUpdatesGivenFields() async throws {
         let mock = MockTransport(stubs: [.status(204)])

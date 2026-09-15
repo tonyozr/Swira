@@ -9,6 +9,16 @@ public enum IssueEndpoints {
         HTTPRequest(method: .put, path: "issue/\(key)")
     }
 
+    /// Fetches a narrow slice of an issue's fields — used to read a field's *current* server
+    /// value immediately before a partial update, rather than trusting whatever a caller happens
+    /// to have cached client-side (which may predate the caller's own last load, or may never
+    /// have been fetched at all if the field wasn't previously requested).
+    public static func get(key: String, fields: [String]) -> HTTPRequest {
+        HTTPRequest(method: .get, path: "issue/\(key)", queryItems: [
+            URLQueryItem(name: "fields", value: fields.joined(separator: ","))
+        ])
+    }
+
     /// The transitions currently available for this issue — which depends on its current
     /// status and its project's workflow, not a fixed list.
     public static func transitions(key: String) -> HTTPRequest {
@@ -37,4 +47,17 @@ struct TransitionRequest: Encodable, Sendable {
         let id: String
     }
     let transition: Ref
+}
+
+/// The narrow response shape for `IssueEndpoints.get(key:fields: ["timetracking"])` — only what
+/// `IssueService.currentTimeTracking(issueKey:)` needs, not a full issue decode.
+struct TimeTrackingFieldResponse: Decodable, Sendable {
+    struct Fields: Decodable, Sendable {
+        let timetracking: TimeTracking?
+    }
+    struct TimeTracking: Decodable, Sendable {
+        let originalEstimate: String?
+        let remainingEstimate: String?
+    }
+    let fields: Fields
 }
