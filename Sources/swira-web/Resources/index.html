@@ -456,6 +456,10 @@ async function loadSidebar(fresh) {
     const data = await api(fresh ? "/api/sidebar?fresh=1" : "/api/sidebar");
     renderFavourites(data.favourites);
     renderTree(data.tree);
+    // Refresh expires the whole cache (docs/CLIENT-SPEC.md §3.4), not just the sidebar's own
+    // list — so the filter already open, if any, should revalidate right along with it instead
+    // of silently sitting on pre-Refresh data until the user reopens it by hand.
+    if (fresh && state.filter) await loadIssues();
   } catch (error) {
     showBanner(error.message);
   } finally {
@@ -468,7 +472,9 @@ function renderFavourites(favourites) {
   host.innerHTML = "";
   for (const filter of favourites) {
     const row = document.createElement("div");
-    row.className = "side-item";
+    // Rebuilt from scratch on every sidebar load (Refresh included), so the currently open
+    // filter's highlight has to be reapplied here rather than surviving as DOM state.
+    row.className = "side-item" + (state.filter?.id === filter.id ? " selected" : "");
     row.dataset.filterId = filter.id;
     // Full name, never just the leaf (spec §2.1).
     row.innerHTML = `<span class="star">★</span>${escapeHTML(filter.name)}`;
@@ -520,7 +526,8 @@ function renderTree(nodes) {
   const renderLevel = (items, depth, container) => {
     for (const node of items) {
       const row = document.createElement("div");
-      row.className = "side-item" + (node.filter ? "" : " virtual");
+      const isSelected = node.filter && state.filter?.id === node.filter.id;
+      row.className = "side-item" + (node.filter ? "" : " virtual") + (isSelected ? " selected" : "");
       row.style.paddingLeft = `${14 + depth * 14}px`;
       const isCollapsed = node.children.length > 0 && collapsed.has(node.path);
       const twisty = node.children.length ? (isCollapsed ? "▸" : "▾") : "";

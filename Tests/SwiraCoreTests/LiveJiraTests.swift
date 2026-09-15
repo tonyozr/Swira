@@ -96,17 +96,17 @@ struct LiveJiraTests {
         let page = try await LiveJira.make().search
             .search(jql: "created >= -365d order by created DESC", maxResults: 5)
         // An empty site is legal; if issues came back, their core fields must have survived.
-        for issue in page.values {
+        for issue in page.value.values {
             #expect(!issue.key.isEmpty)
         }
-        #expect(page.values.count <= 5)
+        #expect(page.value.values.count <= 5)
     }
 
     @Test("The approximate count endpoint answers")
     func countsIssues() async throws {
         let count = try await LiveJira.make().search
             .approximateCount(jql: "created >= -30d")
-        #expect(count >= 0)
+        #expect(count.value >= 0)
     }
 
     @Test("Reference data decodes: projects and fields")

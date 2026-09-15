@@ -24,16 +24,20 @@ public actor SearchService {
     /// - Parameter pageToken: cursor from a previous page's `nextPageToken`; `nil` starts over.
     ///   Opaque to the caller on both deployments: a Jira Cloud cursor, or a synthesized offset
     ///   on Data Center. Treat it as a value to hand back, never to parse.
+    /// - Parameter policy: cached like any other read despite going out as POST — see
+    ///   `SearchEndpoints`. Keyed on the exact request (jql, fields, page), so switching filters
+    ///   or paging never serves another page's issues.
     public func search(
         jql: String,
         fields: [String] = previewFields,
         maxResults: Int = 50,
         pageToken: String? = nil,
-        expand: String? = nil
-    ) async throws -> TokenPage<JiraIssue> {
+        expand: String? = nil,
+        policy: CachePolicy = .default
+    ) async throws -> Cached<TokenPage<JiraIssue>> {
         switch deployment {
         case .cloud:
-            let response: IssueSearchResponse = try await client.send(
+            let response = try await client.sendCached(
                 SearchEndpoints.search(),
                 body: IssueSearchRequest(
                     jql: jql,
@@ -42,12 +46,13 @@ public actor SearchService {
                     nextPageToken: pageToken,
                     expand: expand
                 ),
-                as: IssueSearchResponse.self
+                as: IssueSearchResponse.self,
+                policy: policy
             )
-            return response.page
+            return response.map(\.page)
 
         case .dataCenter:
-            let response: LegacyIssueSearchResponse = try await client.send(
+            let response = try await client.sendCached(
                 SearchEndpoints.legacySearch(),
                 body: LegacyIssueSearchRequest(
                     jql: jql,
@@ -55,13 +60,17 @@ public actor SearchService {
                     maxResults: maxResults,
                     fields: fields
                 ),
-                as: LegacyIssueSearchResponse.self
+                as: LegacyIssueSearchResponse.self,
+                policy: policy
             )
-            return response.tokenPage
+            return response.map(\.tokenPage)
         }
     }
 
     /// Every issue matching `jql`, fetched lazily page by page.
+    ///
+    /// `.networkOnly` like `FiltersService.all` — a deliberate full walk, so mixing in a cached
+    /// page (from some other, narrower call) would produce a list that never existed on Jira.
     public nonisolated func all(
         jql: String,
         fields: [String] = previewFields,
@@ -77,8 +86,9 @@ public actor SearchService {
                 jql: jql,
                 fields: fields,
                 maxResults: pageSize,
-                pageToken: token
-            )
+                pageToken: token,
+                policy: .networkOnly
+            ).value
             return (page.values, page.nextPageToken.map { PageCursor.token($0) })
         }
     }
@@ -90,22 +100,24 @@ public actor SearchService {
     /// "about N", never as a figure to compute with. On Data Center the count comes from the
     /// legacy search's `total` and happens to be exact — but callers should not rely on that,
     /// or the same UI becomes subtly wrong on Cloud.
-    public func approximateCount(jql: String) async throws -> Int {
+    public func approximateCount(jql: String, policy: CachePolicy = .default) async throws -> Cached<Int> {
         switch deployment {
         case .cloud:
-            return try await client.send(
+            return try await client.sendCached(
                 SearchEndpoints.approximateCount(),
                 body: ApproximateCountRequest(jql: jql),
-                as: ApproximateCountResponse.self
-            ).count
+                as: ApproximateCountResponse.self,
+                policy: policy
+            ).map(\.count)
 
         case .dataCenter:
             // A zero-result search is the cheapest way to a total: no issue bodies travel.
-            return try await client.send(
+            return try await client.sendCached(
                 SearchEndpoints.legacySearch(),
                 body: LegacyIssueSearchRequest(jql: jql, startAt: 0, maxResults: 0, fields: []),
-                as: LegacyIssueSearchResponse.self
-            ).total
+                as: LegacyIssueSearchResponse.self,
+                policy: policy
+            ).map(\.total)
         }
     }
 
@@ -113,24 +125,30 @@ public actor SearchService {
     ///
     /// Uses `filter = <id>` rather than the filter's own JQL, so the result reflects what Jira
     /// would show for the filter — including any clause the caller cannot see in the query text.
-    public func preview(filterId: String, limit: Int = 25) async throws -> TokenPage<JiraIssue> {
-        try await search(jql: "filter = \(filterId)", maxResults: limit)
+    public func preview(
+        filterId: String,
+        limit: Int = 25,
+        policy: CachePolicy = .default
+    ) async throws -> Cached<TokenPage<JiraIssue>> {
+        try await search(jql: "filter = \(filterId)", maxResults: limit, policy: policy)
     }
 
     /// Fetches specific issues by id or key.
     public func fetch(
         idsOrKeys: [String],
-        fields: [String] = previewFields
-    ) async throws -> [JiraIssue] {
-        guard !idsOrKeys.isEmpty else { return [] }
+        fields: [String] = previewFields,
+        policy: CachePolicy = .default
+    ) async throws -> Cached<[JiraIssue]> {
+        guard !idsOrKeys.isEmpty else { return Cached(value: [], origin: .network) }
 
         switch deployment {
         case .cloud:
-            return try await client.send(
+            return try await client.sendCached(
                 SearchEndpoints.bulkFetch(),
                 body: BulkFetchRequest(issueIdsOrKeys: idsOrKeys, fields: fields),
-                as: BulkFetchResponse.self
-            ).issues
+                as: BulkFetchResponse.self,
+                policy: policy
+            ).map(\.issues)
 
         case .dataCenter:
             // No bulk-fetch endpoint; a JQL `in` clause is the one-round-trip equivalent.
@@ -139,12 +157,18 @@ public actor SearchService {
             let keys = idsOrKeys.filter { !$0.allSatisfy(\.isNumber) }
 
             var issues: [JiraIssue] = []
+            var origin = CacheOrigin.network
+            var storedAt: [Date] = []
+            var isStale = false
             for (field, values) in [("id", ids), ("key", keys)] where !values.isEmpty {
                 let jql = "\(field) in (\(values.joined(separator: ",")))"
-                let page = try await search(jql: jql, fields: fields, maxResults: values.count)
-                issues.append(contentsOf: page.values)
+                let page = try await search(jql: jql, fields: fields, maxResults: values.count, policy: policy)
+                issues.append(contentsOf: page.value.values)
+                if page.origin == .cache { origin = .cache }
+                if let at = page.storedAt { storedAt.append(at) }
+                isStale = isStale || page.isStale
             }
-            return issues
+            return Cached(value: issues, origin: origin, storedAt: storedAt.min(), isStale: isStale)
         }
     }
 }

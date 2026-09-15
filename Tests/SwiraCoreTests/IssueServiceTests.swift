@@ -192,8 +192,8 @@ struct IssueServiceTests {
         let transitions = try await makeService(MockTransport(stubs: [.ok(body)]))
             .transitions(issueKey: "SW-1")
 
-        #expect(transitions.map(\.name) == ["Start Progress", "Done"])
-        #expect(transitions[0].to?.statusCategory?.key == "indeterminate")
+        #expect(transitions.value.map(\.name) == ["Start Progress", "Done"])
+        #expect(transitions.value[0].to?.statusCategory?.key == "indeterminate")
     }
 
     @Test("Fetching transitions hits the transitions endpoint, not a plain issue read")

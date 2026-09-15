@@ -108,11 +108,15 @@ public actor IssueService {
     }
 
     /// The transitions currently available for this issue, given its status and workflow.
-    public func transitions(issueKey: String) async throws -> [IssueTransition] {
-        try await client.send(
+    public func transitions(
+        issueKey: String,
+        policy: CachePolicy = .default
+    ) async throws -> Cached<[IssueTransition]> {
+        try await client.sendCached(
             IssueEndpoints.transitions(key: issueKey),
-            as: TransitionsResponse.self
-        ).transitions
+            as: TransitionsResponse.self,
+            policy: policy
+        ).map(\.transitions)
     }
 
     /// Applies a transition, moving the issue to whatever status it leads to.
@@ -126,6 +130,8 @@ public actor IssueService {
             body: TransitionRequest(transition: TransitionRequest.Ref(id: transitionId)),
             as: Empty.self
         )
+        // The issue moved to a new status, so its available transitions changed too.
+        await client.invalidateCache(prefix: "GET issue/\(issueKey)/transitions")
     }
 
     private func updateFields(issueKey: String, fields: [String: JSONValue]) async throws {
@@ -134,5 +140,8 @@ public actor IssueService {
             body: UpdateIssueFieldsRequest(fields: fields),
             as: Empty.self
         )
+        // A field edit can itself change which transitions apply (workflow conditions keyed on
+        // fields), so drop the cached list rather than risk offering one that no longer applies.
+        await client.invalidateCache(prefix: "GET issue/\(issueKey)/transitions")
     }
 }

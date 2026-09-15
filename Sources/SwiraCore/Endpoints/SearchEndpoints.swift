@@ -6,21 +6,25 @@ import Foundation
 /// exceeds what a URL can carry, and Jira removed the GET variants along with the old
 /// `/rest/api/3/search` endpoint.
 public enum SearchEndpoints {
+    /// All four below are marked `isCacheableRead`: none of them mutate anything, they're POST
+    /// only because the request doesn't fit in a URL — see `JiraClient.sendCached` and
+    /// `HTTPRequest.isCacheableRead`. Caching them is what lets a filter's issue list still
+    /// render (from the last successful load) when Jira is unreachable or answers 403.
     public static func search() -> HTTPRequest {
-        HTTPRequest(method: .post, path: "search/jql")
+        HTTPRequest(method: .post, path: "search/jql", isCacheableRead: true)
     }
 
     public static func approximateCount() -> HTTPRequest {
-        HTTPRequest(method: .post, path: "search/approximate-count")
+        HTTPRequest(method: .post, path: "search/approximate-count", isCacheableRead: true)
     }
 
     public static func bulkFetch() -> HTTPRequest {
-        HTTPRequest(method: .post, path: "issue/bulkfetch")
+        HTTPRequest(method: .post, path: "issue/bulkfetch", isCacheableRead: true)
     }
 
     /// The pre-cursor search endpoint, still the only one Server / Data Center has.
     public static func legacySearch() -> HTTPRequest {
-        HTTPRequest(method: .post, path: "search")
+        HTTPRequest(method: .post, path: "search", isCacheableRead: true)
     }
 }
 

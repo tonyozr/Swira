@@ -22,33 +22,46 @@ public struct HTTPRequest: Sendable, Hashable {
     public var queryItems: [URLQueryItem]
     public var headers: [String: String]
     public var body: Data?
+    /// Marks a request as a read worth caching despite not being GET.
+    ///
+    /// Some Jira reads (issue search) are POST-only, because the JQL in the body routinely
+    /// exceeds what a URL can carry — see `SearchEndpoints`. Set only on endpoints that are
+    /// genuinely read-only; `JiraClient.sendCached` trusts this flag without re-deriving it.
+    public var isCacheableRead: Bool = false
 
     public init(
         method: HTTPMethod,
         path: String,
         queryItems: [URLQueryItem] = [],
         headers: [String: String] = [:],
-        body: Data? = nil
+        body: Data? = nil,
+        isCacheableRead: Bool = false
     ) {
         self.method = method
         self.path = path
         self.queryItems = queryItems
         self.headers = headers
         self.body = body
+        self.isCacheableRead = isCacheableRead
     }
 
     public mutating func setHeader(_ name: String, _ value: String) {
         headers[name] = value
     }
 
-    /// Cache key: method, path, and sorted query parameters. Headers and body are excluded —
-    /// only GET requests are ever cached.
+    /// Cache key: method, path, sorted query parameters, and — for a cacheable POST read — a
+    /// fingerprint of the body, since that's where a search's JQL actually lives. Headers are
+    /// always excluded.
     var cacheKey: String {
         let query = queryItems
             .sorted { $0.name < $1.name }
             .map { "\($0.name)=\($0.value ?? "")" }
             .joined(separator: "&")
-        return query.isEmpty ? "\(method.rawValue) \(path)" : "\(method.rawValue) \(path)?\(query)"
+        var key = query.isEmpty ? "\(method.rawValue) \(path)" : "\(method.rawValue) \(path)?\(query)"
+        if method != .get, let body, !body.isEmpty {
+            key += "#\(FingerprintHash.of(String(decoding: body, as: UTF8.self)))"
+        }
+        return key
     }
 }
 

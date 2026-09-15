@@ -24,8 +24,12 @@ second, parallel set of commands.
   go-ahead (see the memory file on live-Jira restraint).
 - `swift run swira-probe <subcommand>` — manual CLI for exercising the core against a real site
   (`whoami`, `filters list`, `jql validate`, `search`, `get <path>` for raw JSON, `cache --clear`).
-- `swift run swira-web [--port 8787]` — runs the local web client (embedded HTML/CSS/JS + JSON
-  API). Default port 8787. **On Windows, a running `swira-web.exe` holds a file lock that makes
+- `swift run swira-web [--port 8787] [--offline]` — runs the local web client (embedded
+  HTML/CSS/JS + JSON API). Default port 8787. `--offline` makes `Swira`/`JiraProxy` fail every
+  network attempt as though the connection were down — reads answer from whatever `SQLiteCacheStore`
+  already has (marked `isStale`/`X-Swira-Cache: stale`), writes and anything uncached fail
+  immediately instead of hanging. Useful for actually exercising the offline path by hand rather
+  than unplugging the network. **On Windows, a running `swira-web.exe` holds a file lock that makes
   `swift build` fail with a linker "permission denied" error.** Before rebuilding, find and stop
   it: `Get-NetTCPConnection -LocalPort 8787 -State Listen`, confirm the PID is really
   `swira-web.exe` via `Get-Process -Id <pid> | Select Path`, then `Stop-Process -Id <pid> -Force`
@@ -42,8 +46,15 @@ at the `JiraClient` level (ETag/304) and the `Service` level (cache-policy per r
   macOS/Windows/Linux) and imports neither AppKit nor SwiftUI. Development is on Windows,
   x86_64-unknown-windows-msvc, Swift 6.3.3; runtime clients target macOS (and later Windows/WinUI).
   This is why transport avoids relying on flaky corelibs-Foundation async `URLSession` behavior,
-  cache is flat JSON files (no SQLite), and cache paths go through `CacheLocation` rather than
-  `~/Library`.
+  and cache paths go through `CacheLocation` rather than `~/Library`.
+- **The default cache backend is `SQLiteCacheStore`** (`Cache/SQLiteCacheStore.swift`), one
+  `cache.sqlite` file under `CacheLocation.default()`, built on `swift-toolchain-sqlite` — the
+  SQLite amalgamation vendored as plain C source in the package, not a `.systemLibrary` pointed
+  at a pre-installed `libsqlite3` (what GRDB/SQLite.swift do by default and what would have
+  reintroduced exactly the "needs something installed beyond `swift build`" problem this project
+  avoids elsewhere on Windows). `FileSystemCacheStore` (one JSON file per entry) still exists and
+  still passes its own tests, kept as a second `CacheStore` implementation rather than deleted —
+  swap it in via `Swira.init(cache:)` if a reason to prefer it ever comes up.
 - **Cloud vs. Data Center dialects are hidden behind one public API.** Set `JIRA_API_VERSION=2`
   to target Server/Data Center (REST v2); the deployment is inferred from the API version and
   services silently switch request/response shape (issue search offset-vs-cursor, JQL validation
@@ -68,7 +79,14 @@ at the `JiraClient` level (ETag/304) and the `Service` level (cache-policy per r
 - **Caching is `Cached<T>`-returning and policy-driven** (`.networkOnly`, `.cacheFirst(ttl:)`,
   `.staleWhileRevalidate`, `.cacheOnly`), so UIs can honestly show "data from Xm ago, offline"
   instead of silently serving stale data as fresh. Mutations always hit the network and invalidate
-  affected cache keys. Issue search results and anything containing credentials are never cached.
+  affected cache keys. Anything containing credentials is never cached. Every GET — plus the
+  handful of POST-only reads (issue search, bulk fetch, approximate count) that carry JQL too
+  large for a URL, opted in via `HTTPRequest.isCacheableRead` — is cached, and falls back to the
+  cached answer not just when the network is unreachable but also on 403/5xx ("forbidden" or
+  "just unavailable" — see `JiraClient.isCacheWorthyFailure`). `swira-web`'s Jira reverse proxy
+  (`JiraProxy.swift`) mirrors this for Split View's embedded page, which bypasses `JiraClient`
+  entirely: it caches every successful proxied GET through the same `Swira.cache` store and
+  replays it under the same conditions. See CLIENT-SPEC.md §3.4.
 - **`Models/JiraIssue.swift`'s `Issue.fields` is a loosely-typed `[String: JSONValue]`** (see
   `Support/JSONValue.swift`) rather than a fully-typed model — Jira's field set is
   project/instance-specific and unbounded (including custom fields), so typing it exhaustively

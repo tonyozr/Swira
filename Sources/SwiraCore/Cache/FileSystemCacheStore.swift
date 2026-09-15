@@ -70,6 +70,23 @@ public actor FileSystemCacheStore: CacheStore {
         }
     }
 
+    public func expireAll(withPrefix prefix: String) async {
+        for url in entryFiles() {
+            guard let data = try? Data(contentsOf: url),
+                  let entry = try? decoder.decode(CacheEntry.self, from: data),
+                  entry.key.hasPrefix(prefix)
+            else {
+                continue
+            }
+            let expired = CacheEntry(
+                key: entry.key, data: entry.data, etag: entry.etag, storedAt: entry.storedAt, expired: true
+            )
+            if let encoded = try? encoder.encode(expired) {
+                try? encoded.write(to: url, options: .atomic)
+            }
+        }
+    }
+
     // MARK: - Layout
 
     private func entryFiles() -> [URL] {

@@ -17,12 +17,19 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.4.0"),
+        // The SQLite amalgamation, vendored as plain C source — not a `.systemLibrary` pointed
+        // at a pre-installed libsqlite3 (what GRDB/SQLite.swift do by default). That's the whole
+        // reason this one, and not a fuller-featured ORM, backs `SQLiteCacheStore`: it needs
+        // nothing installed beyond the Swift toolchain itself, on any platform including
+        // Windows — see the doc comment on `SQLiteCacheStore`.
+        .package(url: "https://github.com/swiftlang/swift-toolchain-sqlite.git", from: "1.0.13"),
     ],
     targets: [
         .target(
             name: "SwiraCore",
             dependencies: [
-                .product(name: "Logging", package: "swift-log")
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "SwiftToolchainCSQLite", package: "swift-toolchain-sqlite"),
             ]
         ),
         .executableTarget(

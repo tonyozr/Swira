@@ -52,9 +52,9 @@ struct DataCenterTests {
         #expect(request.method == .post)
 
         // Offset pagination surfaces through the same token API the Cloud path uses.
-        #expect(page.values.map(\.key) == ["SW-1", "SW-2"])
-        #expect(page.nextPageToken == "2")
-        #expect(page.hasMore)
+        #expect(page.value.values.map(\.key) == ["SW-1", "SW-2"])
+        #expect(page.value.nextPageToken == "2")
+        #expect(page.value.hasMore)
     }
 
     @Test("The synthesized token feeds back in as the next offset")
@@ -71,9 +71,9 @@ struct DataCenterTests {
         let sent = try JSONDecoder().decode(JSONValue.self, from: try #require(request.body))
         #expect(sent["startAt"]?.intValue == 2)
 
-        #expect(page.values.map(\.key) == ["SW-3"])
-        #expect(page.nextPageToken == nil)
-        #expect(!page.hasMore)
+        #expect(page.value.values.map(\.key) == ["SW-3"])
+        #expect(page.value.nextPageToken == nil)
+        #expect(!page.value.hasMore)
     }
 
     @Test("Walking all issues crosses page boundaries transparently")
@@ -101,7 +101,7 @@ struct DataCenterTests {
         let mock = MockTransport(stubs: [.ok(body)])
         let count = try await makeSearch(mock).approximateCount(jql: "project = SW")
 
-        #expect(count == 42)
+        #expect(count.value == 42)
         let request = try #require(await mock.recorded.first)
         let body2 = try #require(request.body)
         let sent = try JSONDecoder().decode(JSONValue.self, from: body2)
@@ -116,7 +116,7 @@ struct DataCenterTests {
 
         let issues = try await makeSearch(mock).fetch(idsOrKeys: ["7", "SW-8"])
 
-        #expect(issues.map(\.key).sorted() == ["SW-7", "SW-8"])
+        #expect(issues.value.map(\.key).sorted() == ["SW-7", "SW-8"])
         let recorded = await mock.recorded
         let bodies = try recorded.compactMap(\.body).map {
             try JSONDecoder().decode(JSONValue.self, from: $0)
