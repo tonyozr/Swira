@@ -375,8 +375,6 @@ public sealed partial class MainWindow : Window
     {
         var filter = FindFilter(filterId);
         _selectedFilter = filter;
-        _sortField = "updated";
-        _sortDescending = true;
         FilterTitle.Text = filter?.Name ?? filterId;
         EditQueryButton.IsEnabled = true;
         ColumnsButton.IsEnabled = true;
@@ -412,7 +410,9 @@ public sealed partial class MainWindow : Window
     }
 
     /// Restores the first saved ORDER BY term when opening a filter. The toolbar only represents
-    /// one term, so additional terms remain in the filter's JQL but cannot be shown there.
+    /// one term, so additional terms remain in the filter's JQL but cannot be shown there. If the
+    /// filter's JQL has no ORDER BY of its own, the current sort selection is left untouched
+    /// rather than reset, so it carries over across filter switches.
     private void ApplyFilterSort(string? jql)
     {
         if (jql is not null && _allFields is not null)
