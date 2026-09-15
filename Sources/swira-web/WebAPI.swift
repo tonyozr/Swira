@@ -250,21 +250,25 @@ struct WebAPI: Sendable {
             case "estimate":
                 // Jira's own timetracking update auto-adjusts whichever of
                 // originalEstimate/remainingEstimate is omitted from the request (re-deriving it
-                // from the pair's prior ratio) -- see JRASERVER-30459 / JRACLOUD-67539. The client
-                // sends the sibling field's current value alongside the one actually being
-                // edited so both are explicit here, and Jira has nothing left to auto-adjust.
+                // from the pair's prior ratio) -- see JRASERVER-30459 / JRACLOUD-67539. To keep
+                // the sibling field explicit and untouched, we need its *current* value — and we
+                // read that fresh from Jira right here rather than trusting a client-supplied one,
+                // since the client's cached issue data may predate its own last load, or may never
+                // have included `timetracking` at all (e.g. right after adding an estimate column
+                // that wasn't previously part of the fetched field set).
                 let fieldId = body.fieldId ?? "timeoriginalestimate"
+                let current = try await swira.issue.currentTimeTracking(issueKey: key)
                 if fieldId == "timeestimate" {
                     try await swira.issue.setTimeTracking(
                         issueKey: key,
-                        originalEstimate: body.originalEstimate,
+                        originalEstimate: current.originalEstimate,
                         remainingEstimate: body.value ?? body.remainingEstimate
                     )
                 } else {
                     try await swira.issue.setTimeTracking(
                         issueKey: key,
                         originalEstimate: body.value ?? body.originalEstimate,
-                        remainingEstimate: body.remainingEstimate
+                        remainingEstimate: current.remainingEstimate
                     )
                 }
             default:
