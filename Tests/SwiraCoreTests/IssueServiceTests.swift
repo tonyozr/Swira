@@ -171,6 +171,27 @@ struct IssueServiceTests {
         #expect(body.path("fields.timetracking.originalEstimate")?.isNull == true)
     }
 
+    @Test("Independent estimate edits use the same timetracking shape on Data Center as on Cloud")
+    func setsEstimatesIndependentlyOnDataCenter() async throws {
+        let originalMock = MockTransport(stubs: [.status(204)])
+        try await makeService(originalMock, deployment: .dataCenter)
+            .setTimeTracking(issueKey: "SW-1", originalEstimate: "1d 2h")
+
+        let originalRequest = try #require(await originalMock.recorded.first)
+        let originalBody = try JSONDecoder().decode(JSONValue.self, from: try #require(originalRequest.body))
+        #expect(originalBody.path("fields.timetracking.originalEstimate") == .string("1d 2h"))
+        #expect(originalBody.path("fields.timetracking.remainingEstimate") == nil)
+
+        let remainingMock = MockTransport(stubs: [.status(204)])
+        try await makeService(remainingMock, deployment: .dataCenter)
+            .setTimeTracking(issueKey: "SW-1", remainingEstimate: "4h")
+
+        let remainingRequest = try #require(await remainingMock.recorded.first)
+        let remainingBody = try JSONDecoder().decode(JSONValue.self, from: try #require(remainingRequest.body))
+        #expect(remainingBody.path("fields.timetracking.remainingEstimate") == .string("4h"))
+        #expect(remainingBody.path("fields.timetracking.originalEstimate") == nil)
+    }
+
     @Test("A field update never touches fields the caller didn't mention")
     func onlyUpdatesGivenFields() async throws {
         let mock = MockTransport(stubs: [.status(204)])
