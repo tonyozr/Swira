@@ -88,7 +88,14 @@ public actor IssueService {
     /// Sets time tracking estimates on an issue.
     ///
     /// Jira supports duration strings such as `"1d"`, `"2h 30m"`, `"1w"`.
-    /// Passing `nil` or empty string clears the respective estimate.
+    /// Passing `nil` leaves the respective estimate untouched; passing an empty string clears it.
+    ///
+    /// Identical quirk on both deployments: when only one of the two estimates is present in the
+    /// `timetracking` payload, Jira itself (not this method) silently auto-adjusts the other one
+    /// from the pair's prior ratio, rather than leaving it alone — see JRASERVER-30459 /
+    /// JRACLOUD-67539. Callers editing a single estimate in a UI where the other one's current
+    /// value is already known should pass both here (the untouched one unchanged) so Jira has
+    /// nothing left to auto-adjust; see `WebAPI`'s `estimate` edit kind for the pattern.
     public func setTimeTracking(
         issueKey: String,
         originalEstimate: String? = nil,

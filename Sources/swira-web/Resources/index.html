@@ -1298,7 +1298,18 @@ async function activateCellEditor(cell) {
     const apply = () => {
       const val = input.value.trim();
       finish();
-      saveCellEdit(cell, key, { kind: "estimate", fieldId, value: val || null }, original);
+      // Jira's own timetracking update silently re-derives whichever one of
+      // originalEstimate/remainingEstimate isn't in the request (auto-adjust, based on their
+      // prior ratio) -- see JRASERVER-30459 / JRACLOUD-67539. Sending the sibling field's known
+      // current value alongside the edited one keeps it explicit, so Jira has nothing left to
+      // auto-adjust.
+      const payload = { kind: "estimate", fieldId, value: val };
+      if (fieldId === "timeestimate") {
+        if (tracking?.originalEstimate) payload.originalEstimate = tracking.originalEstimate;
+      } else if (tracking?.remainingEstimate) {
+        payload.remainingEstimate = tracking.remainingEstimate;
+      }
+      saveCellEdit(cell, key, payload, original);
     };
 
     picker.querySelector(".btn-cancel").onclick = () => {

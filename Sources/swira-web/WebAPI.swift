@@ -248,16 +248,23 @@ struct WebAPI: Sendable {
                 }
                 try await swira.issue.setDate(issueKey: key, fieldId: fieldId, value: body.value)
             case "estimate":
+                // Jira's own timetracking update auto-adjusts whichever of
+                // originalEstimate/remainingEstimate is omitted from the request (re-deriving it
+                // from the pair's prior ratio) -- see JRASERVER-30459 / JRACLOUD-67539. The client
+                // sends the sibling field's current value alongside the one actually being
+                // edited so both are explicit here, and Jira has nothing left to auto-adjust.
                 let fieldId = body.fieldId ?? "timeoriginalestimate"
                 if fieldId == "timeestimate" {
                     try await swira.issue.setTimeTracking(
                         issueKey: key,
+                        originalEstimate: body.originalEstimate,
                         remainingEstimate: body.value ?? body.remainingEstimate
                     )
                 } else {
                     try await swira.issue.setTimeTracking(
                         issueKey: key,
-                        originalEstimate: body.value ?? body.originalEstimate
+                        originalEstimate: body.value ?? body.originalEstimate,
+                        remainingEstimate: body.remainingEstimate
                     )
                 }
             default:
