@@ -58,6 +58,13 @@ enum JSONCoding {
     static func makeEncoder() -> JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .formatted(parsers[0])
+        // Without this, corelibs-Foundation's `JSONEncoder` does not guarantee a stable key
+        // order between two encodes of structurally-identical values (confirmed live: encoding
+        // the same `IssueSearchRequest` twice produced different byte sequences) — harmless for
+        // Jira, which doesn't care about key order, but it broke the one thing in this codebase
+        // that hashes an encoded body: `HTTPRequest.cacheKey`'s POST-read fingerprint (see
+        // `SearchEndpoints`), which needs two encodes of the same request to hash identically.
+        encoder.outputFormatting = [.sortedKeys]
         return encoder
     }
 }

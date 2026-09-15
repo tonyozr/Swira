@@ -14,10 +14,10 @@ struct SearchServiceTests {
         let mock = MockTransport(stubs: [.ok(try Fixture.data("search-page1"))])
         let page = try await makeService(mock).search(jql: "project = SWIRA")
 
-        #expect(page.values.count == 2)
-        #expect(page.nextPageToken == "CAEaAggD")
-        #expect(page.hasMore)
-        #expect(page.values[0].key == "SWIRA-1")
+        #expect(page.value.values.count == 2)
+        #expect(page.value.nextPageToken == "CAEaAggD")
+        #expect(page.value.hasMore)
+        #expect(page.value.values[0].key == "SWIRA-1")
     }
 
     @Test("Search is a POST — filter JQL routinely outgrows a URL")
@@ -82,7 +82,7 @@ struct SearchServiceTests {
         let mock = MockTransport(stubs: [.ok(Data(#"{"count":1337}"#.utf8))])
         let count = try await makeService(mock).approximateCount(jql: "project = SWIRA")
 
-        #expect(count == 1337)
+        #expect(count.value == 1337)
         #expect(try #require(await mock.recorded.first).path == "search/approximate-count")
     }
 
@@ -91,7 +91,7 @@ struct SearchServiceTests {
         let mock = MockTransport(stubs: [])
         let issues = try await makeService(mock).fetch(idsOrKeys: [])
 
-        #expect(issues.isEmpty)
+        #expect(issues.value.isEmpty)
         #expect(await mock.requestCount == 0)
     }
 }

@@ -10,6 +10,7 @@ public actor JiraClient {
     private let transport: HTTPTransport
     private let auth: AuthProvider
     private let cache: CacheStore
+    private let offline: Bool
     private let logger: Logger
     private let decoder = JSONCoding.makeDecoder()
     private let encoder = JSONCoding.makeEncoder()
@@ -18,11 +19,13 @@ public actor JiraClient {
         transport: HTTPTransport,
         auth: AuthProvider,
         cache: CacheStore = NullCacheStore(),
+        offline: Bool = false,
         logger: Logger = Logger(label: "swira.client")
     ) {
         self.transport = transport
         self.auth = auth
         self.cache = cache
+        self.offline = offline
         self.logger = logger
     }
 
@@ -52,18 +55,34 @@ public actor JiraClient {
         return try await send(request, as: Response.self)
     }
 
+    /// Encodes `body` and sends it under a cache policy — the `sendCached` counterpart to
+    /// `send(_:body:as:)`, for POST-only reads such as issue search (see
+    /// `HTTPRequest.isCacheableRead`). The body is part of the cache key, so two different
+    /// searches never collide.
+    public func sendCached<Body: Encodable & Sendable, Response: Decodable & Sendable>(
+        _ request: HTTPRequest,
+        body: Body,
+        as type: Response.Type = Response.self,
+        policy: CachePolicy = .default
+    ) async throws -> Cached<Response> {
+        var request = request
+        request.body = try encode(body)
+        return try await sendCached(request, as: Response.self, policy: policy)
+    }
+
     // MARK: - Caching
 
     /// Sends a request under a cache policy, reporting whether the answer came off the network.
     ///
-    /// Only GET is cached; anything else goes straight out, because caching a mutation would be
-    /// meaningless at best.
+    /// Cached when the request is GET, or explicitly marked `isCacheableRead` (a POST-only read
+    /// such as issue search — see `HTTPRequest.isCacheableRead`). Anything else goes straight
+    /// out, because caching a mutation would be meaningless at best.
     public func sendCached<Response: Decodable & Sendable>(
         _ request: HTTPRequest,
         as type: Response.Type = Response.self,
         policy: CachePolicy = .default
     ) async throws -> Cached<Response> {
-        guard request.method == .get else {
+        guard request.method == .get || request.isCacheableRead else {
             return Cached(value: try await send(request, as: Response.self), origin: .network)
         }
 
@@ -82,7 +101,10 @@ public actor JiraClient {
             )
 
         case .cacheFirst(let ttl):
-            if let entry, entry.age <= ttl {
+            // `!entry.expired`: a "Refresh"-expired entry must attempt a real revalidation even
+            // when it's well inside its ordinary TTL — that's the whole point of expiring it
+            // rather than just waiting. See `CacheEntry.expired`.
+            if let entry, entry.age <= ttl, !entry.expired {
                 return Cached(
                     value: try decode(Response.self, from: entry.data),
                     origin: .cache,
@@ -172,6 +194,15 @@ public actor JiraClient {
         await cache.clear()
     }
 
+    /// Expires every cached response whose key starts with `prefix` (every one, if omitted) —
+    /// see `CacheStore.expireAll`. The "Refresh" primitive: the next matching read attempts a
+    /// real server round trip, but keeps serving the old value (marked stale) if that attempt
+    /// fails, rather than the outright drop `invalidateCache` does for a mutation that already
+    /// succeeded.
+    public func expireCache(prefix: String = "") async {
+        await cache.expireAll(withPrefix: prefix)
+    }
+
     /// Goes to the network, revalidating with `If-None-Match` when an ETag is on hand.
     ///
     /// - Parameter allowCacheFallback: when the network fails, serve stale cache instead of
@@ -194,16 +225,12 @@ public actor JiraClient {
         do {
             response = try await execute(request)
         } catch let error as SwiraError {
-            guard allowCacheFallback, case .transport = error, let entry else {
-                throw error
+            if let fallback = cacheFallback(
+                for: error, entry: entry, key: key, allowed: allowCacheFallback, as: Response.self
+            ) {
+                return try fallback()
             }
-            logger.debug("Network failed; serving cached response", metadata: ["key": "\(key)"])
-            return Cached(
-                value: try decode(Response.self, from: entry.data),
-                origin: .cache,
-                storedAt: entry.storedAt,
-                isStale: true
-            )
+            throw error
         }
 
         // 304: the cached body is still current. Re-store it so its age restarts.
@@ -219,7 +246,13 @@ public actor JiraClient {
         }
 
         guard response.isSuccess else {
-            throw makeError(from: response, request: request)
+            let error = makeError(from: response, request: request)
+            if let fallback = cacheFallback(
+                for: error, entry: entry, key: key, allowed: allowCacheFallback, as: Response.self
+            ) {
+                return try fallback()
+            }
+            throw error
         }
 
         let value = try decode(Response.self, from: response.body)
@@ -227,6 +260,46 @@ public actor JiraClient {
             CacheEntry(key: key, data: response.body, etag: response.header("ETag"))
         )
         return Cached(value: value, origin: .network)
+    }
+
+    /// Whether `error` is the kind a cached answer should stand in for: the network is actually
+    /// unreachable, `offline` mode is on (`execute` throws `.offline` for the same reason), or
+    /// Jira answered but refused/couldn't serve the request (403, or a 5xx — "just unavailable").
+    /// A 401 or 404 is never covered: those mean the request itself is wrong, and a stale cache
+    /// would only hide that.
+    private func isCacheWorthyFailure(_ error: SwiraError) -> Bool {
+        switch error {
+        case .transport, .forbidden, .offline:
+            return true
+        case .jira(let status, _, _):
+            return status >= 500
+        default:
+            return false
+        }
+    }
+
+    /// Builds a thunk that decodes `entry` as a stand-in for `error`, or `nil` when this failure
+    /// shouldn't fall back (wrong request, no entry on hand, or the caller opted out).
+    private func cacheFallback<Response: Decodable & Sendable>(
+        for error: SwiraError,
+        entry: CacheEntry?,
+        key: String,
+        allowed: Bool,
+        as type: Response.Type
+    ) -> (() throws -> Cached<Response>)? {
+        guard allowed, let entry, isCacheWorthyFailure(error) else { return nil }
+        return { [self] in
+            logger.debug(
+                "Jira unreachable; serving cached response",
+                metadata: ["key": "\(key)", "reason": "\(error)"]
+            )
+            return Cached(
+                value: try decode(Response.self, from: entry.data),
+                origin: .cache,
+                storedAt: entry.storedAt,
+                isStale: true
+            )
+        }
     }
 
     // MARK: - Internals
@@ -241,6 +314,19 @@ public actor JiraClient {
 
     /// Authorizes and sends, without interpreting the status. Callers decide what a status means.
     private func execute(_ request: HTTPRequest) async throws -> HTTPResponse {
+        // The one choke point every request — cached or not, read or write — passes through on
+        // its way to the network, which is what makes `offline` a single flag rather than a
+        // policy override threaded through every service call. `.offline(hasStaleCache: false)`
+        // rather than `.transport`: `isCacheWorthyFailure` treats both as cache-worthy, so a
+        // `sendCached` read with an entry on hand still gets "serve the last good answer" either
+        // way — but when there is no entry, the caller sees the description that actually
+        // describes what happened ("Offline, and nothing cached.") instead of a network-failure
+        // message for a request that never touched the network. A plain mutation (never cached)
+        // just fails immediately with the same error, which is the correct answer: there is no
+        // sensible way to "apply a field edit from cache."
+        guard !offline else {
+            throw SwiraError.offline(hasStaleCache: false)
+        }
         var request = request
         try await auth.authorize(&request)
 

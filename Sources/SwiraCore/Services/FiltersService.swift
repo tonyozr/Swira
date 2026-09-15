@@ -183,8 +183,8 @@ public actor FiltersService {
 
     // MARK: - Columns
 
-    public func columns(id: String) async throws -> [FilterColumn] {
-        try await client.send(FilterEndpoints.columns(id: id), as: [FilterColumn].self)
+    public func columns(id: String, policy: CachePolicy = .default) async throws -> Cached<[FilterColumn]> {
+        try await client.sendCached(FilterEndpoints.columns(id: id), as: [FilterColumn].self, policy: policy)
     }
 
     /// Sets the columns shown for this filter, in order.
@@ -212,8 +212,8 @@ public actor FiltersService {
 
     // MARK: - Sharing
 
-    public func permissions(id: String) async throws -> [SharePermission] {
-        try await client.send(FilterEndpoints.permissions(id: id), as: [SharePermission].self)
+    public func permissions(id: String, policy: CachePolicy = .default) async throws -> Cached<[SharePermission]> {
+        try await client.sendCached(FilterEndpoints.permissions(id: id), as: [SharePermission].self, policy: policy)
     }
 
     /// Adds a share. Returns the full share list as Jira now sees it.

@@ -337,6 +337,29 @@ Wherever the core returns `Cached<T>`, the client MUST distinguish live data fro
 data served from cache is labelled with its age (e.g. "as of 12:04"), and stale data is
 visually distinct. Clients MUST NOT present cached data as current.
 
+Every read the core makes — including issue search, which is POST-only because JQL routinely
+outgrows a URL — goes through the same cache, and falls back to the last cached answer not
+only when the network is unreachable but also when Jira answers 403 (a token that lost a
+permission, or a WAF rule that started blocking the route) or 5xx ("just unavailable"). A 401
+or 404 is never masked this way: those mean the request itself is wrong, not that Jira is
+temporarily unreachable, and hiding that behind stale data would be actively misleading.
+
+Split view's embedded page (§3.2) gets the same treatment through a separate mechanism, since
+it doesn't go through `JiraClient` at all: the reverse proxy caches every successful GET it
+relays (the same processed bytes the frame would have received live) and, on the same
+network-unreachable/403/5xx conditions, replays the cached copy instead of Jira's error page or
+a blank frame. It marks the replay with an `X-Swira-Cache: stale` response header so a client
+that wants to surface this in the UI can, though none currently do.
+
+A "Refresh" action MUST expire the cache rather than clear it (`Swira.expireCache()` /
+`CacheStore.expireAll`): every entry stays available, but the next read of each one attempts a
+real server round trip regardless of its TTL. A successful round trip (a new body, or a 304
+confirming the old one is still current) updates it as normal; a failed one — offline, 403, 5xx —
+falls back to the pre-Refresh value exactly as an ordinary TTL-driven read would, marked stale.
+Refresh MUST NOT make data disappear just because the round trip it triggers didn't succeed. Its
+own displayed age keeps reflecting the true last-successful-fetch time, not the moment it was
+marked for revalidation — a client MUST NOT read `expireAll` as "pretend this happened just now."
+
 ---
 
 ## 4. Cross-implementation notes

@@ -24,6 +24,12 @@ struct SwiraWeb: ParsableCommand {
     )
     var socket: String?
 
+    @Flag(
+        name: .long,
+        help: "Never hit Jira over the network; serve every read from cache and fail writes immediately instead of hanging on a request that can't succeed."
+    )
+    var offline = false
+
     func run() throws {
         let logger = Logger(label: "swira.web")
 
@@ -32,7 +38,7 @@ struct SwiraWeb: ParsableCommand {
         var swira: Swira?
         var configurationError: String?
         do {
-            swira = try Swira.fromEnvironment()
+            swira = try Swira.fromEnvironment(offline: offline)
         } catch let error as SwiraError {
             configurationError = error.errorDescription
         }
@@ -40,10 +46,16 @@ struct SwiraWeb: ParsableCommand {
         if let swira {
             logger.info(
                 "Configured",
-                metadata: ["site": "\(swira.configuration.site.baseURL.absoluteString)"]
+                metadata: [
+                    "site": "\(swira.configuration.site.baseURL.absoluteString)",
+                    "offline": "\(offline)",
+                ]
             )
         } else {
             logger.warning("Starting unconfigured: \(configurationError ?? "unknown reason")")
+        }
+        if offline {
+            print("Offline mode: every read is served from cache; writes will fail immediately.")
         }
 
         let address: HTTPServer.ListenAddress = socket.map { .unixSocket(path: $0) } ?? .tcp(port: port)

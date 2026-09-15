@@ -8,16 +8,38 @@ public struct CacheEntry: Sendable, Hashable, Codable {
     /// Jira's `ETag`, replayed as `If-None-Match` so an unchanged resource costs a 304, not a body.
     public let etag: String?
     public let storedAt: Date
+    /// Set by `CacheStore.expireAll` ("Refresh"): forces the next `.cacheFirst`/`.default` read
+    /// to attempt a real revalidation regardless of `age`/`ttl`, without discarding `storedAt` —
+    /// which stays the true last-successful-fetch time, so a fallback serving this entry after a
+    /// *failed* revalidation still reports an honest age ("12m ago"), not the moment it was
+    /// marked expired. A successful revalidation (fresh body or a 304) always clears this.
+    public let expired: Bool
 
-    public init(key: String, data: Data, etag: String? = nil, storedAt: Date = Date()) {
+    public init(key: String, data: Data, etag: String? = nil, storedAt: Date = Date(), expired: Bool = false) {
         self.key = key
         self.data = data
         self.etag = etag
         self.storedAt = storedAt
+        self.expired = expired
     }
 
     public var age: TimeInterval {
         Date().timeIntervalSince(storedAt)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key, data, etag, storedAt, expired
+    }
+
+    /// Manual `init(from:)`: `expired` defaults to `false` for an entry written before this field
+    /// existed, rather than failing to decode it.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(String.self, forKey: .key)
+        data = try container.decode(Data.self, forKey: .data)
+        etag = try container.decodeIfPresent(String.self, forKey: .etag)
+        storedAt = try container.decode(Date.self, forKey: .storedAt)
+        expired = try container.decodeIfPresent(Bool.self, forKey: .expired) ?? false
     }
 }
 
@@ -27,9 +49,27 @@ public protocol CacheStore: Sendable {
     func store(_ entry: CacheEntry) async
     func remove(_ key: String) async
     /// Drops every entry whose key starts with `prefix`. Used to invalidate a whole family of
-    /// requests after a mutation — every `filter/search` page at once, say.
+    /// requests after a mutation — every `filter/search` page at once, say. A mutation is the
+    /// right place for an outright drop: it just succeeded, so the caller already knows the old
+    /// cached answer is wrong, and there is no offline concern (a mutation cannot have succeeded
+    /// while offline in the first place).
     func removeAll(withPrefix prefix: String) async
     func clear() async
+    /// Marks every entry whose key starts with `prefix` as though its TTL had already elapsed,
+    /// without deleting it: the next `.cacheFirst`/`.default` read goes to the network to
+    /// revalidate (a 304 just refreshes its age; a changed body replaces it), but if that attempt
+    /// fails — network down, 403, 5xx, or `offline` mode — the entry is still there for
+    /// `JiraClient.fetchAndCache`'s existing fallback to serve, marked stale. This is the "Refresh"
+    /// primitive: unlike `removeAll(withPrefix:)`, it never makes data disappear just because the
+    /// server round trip it triggers doesn't succeed.
+    func expireAll(withPrefix prefix: String) async
+}
+
+extension CacheStore {
+    /// Convenience for expiring the whole store — `expireAll(withPrefix: "")` matches every key.
+    public func expireAll() async {
+        await expireAll(withPrefix: "")
+    }
 }
 
 /// How fresh a caller needs the data to be.
@@ -129,6 +169,15 @@ public actor MemoryCacheStore: CacheStore {
     public func clear() async {
         entries.removeAll()
     }
+
+    public func expireAll(withPrefix prefix: String) async {
+        for key in entries.keys where key.hasPrefix(prefix) {
+            guard let entry = entries[key] else { continue }
+            entries[key] = CacheEntry(
+                key: entry.key, data: entry.data, etag: entry.etag, storedAt: entry.storedAt, expired: true
+            )
+        }
+    }
 }
 
 /// A cache that ignores everything written to it.
@@ -141,4 +190,5 @@ public struct NullCacheStore: CacheStore {
     public func remove(_ key: String) async {}
     public func removeAll(withPrefix prefix: String) async {}
     public func clear() async {}
+    public func expireAll(withPrefix prefix: String) async {}
 }

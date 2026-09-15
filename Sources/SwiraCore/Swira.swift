@@ -12,6 +12,16 @@ public struct Swira: Sendable {
     /// e.g. `swira-web`'s Jira reverse proxy, which forwards arbitrary Jira paths rather than
     /// going through `JiraClient`.
     public let auth: AuthProvider
+    /// The same on-disk cache every service reads and writes through `JiraClient`. Exposed
+    /// alongside `auth` for the same reason: `swira-web`'s Jira reverse proxy caches its own
+    /// (non-REST) responses so Split View still has something to show when Jira is unreachable,
+    /// and sharing this store — rather than standing up a second one — keeps identity/reconcile
+    /// handling (see `CacheIdentity`) in the one place that already does it.
+    public let cache: CacheStore
+    /// True when this instance never touches the network — set from `Swira.init(offline:)`.
+    /// Exposed for the same reason as `auth`/`cache`: `swira-web`'s Jira reverse proxy needs to
+    /// honor the same flag for Split View's embedded page, which bypasses `JiraClient` entirely.
+    public let offline: Bool
     public let filters: FiltersService
     public let jql: JQLService
     public let search: SearchService
@@ -25,11 +35,16 @@ public struct Swira: Sendable {
     /// - Parameters:
     ///   - transport: pass `nil` for the real one. Tests pass a stub; nothing else should.
     ///   - cache: pass `nil` for the on-disk cache, or `NullCacheStore()` to disable caching.
+    ///   - offline: when true, every request fails as though the network were unreachable — see
+    ///     `JiraClient.execute`. Cached reads still answer from whatever is already on disk;
+    ///     writes and anything with no cached entry fail immediately, rather than genuinely
+    ///     attempting (and timing out on) the network.
     public init(
         configuration: SwiraConfiguration,
         auth: AuthProvider,
         transport: HTTPTransport? = nil,
         cache: CacheStore? = nil,
+        offline: Bool = false,
         logger: Logger = Logger(label: "swira")
     ) {
         let resolvedTransport = transport ?? RetryingTransport(
@@ -47,7 +62,7 @@ public struct Swira: Sendable {
                 fingerprint: CacheIdentity.fingerprint(site: configuration.site, auth: auth)
             )
         }
-        let resolvedCache = cache ?? FileSystemCacheStore(
+        let resolvedCache = cache ?? SQLiteCacheStore(
             directory: configuration.cacheDirectory,
             logger: logger
         )
@@ -55,6 +70,7 @@ public struct Swira: Sendable {
             transport: resolvedTransport,
             auth: auth,
             cache: resolvedCache,
+            offline: offline,
             logger: logger
         )
 
@@ -64,6 +80,8 @@ public struct Swira: Sendable {
 
         self.configuration = configuration
         self.auth = auth
+        self.cache = resolvedCache
+        self.offline = offline
         self.client = client
         self.filters = FiltersService(client: client, deployment: deployment)
         self.jql = JQLService(client: client, deployment: deployment)
@@ -78,14 +96,16 @@ public struct Swira: Sendable {
     public static func fromEnvironment(
         _ environment: [String: String] = ProcessInfo.processInfo.environment,
         transport: HTTPTransport? = nil,
-        cache: CacheStore? = nil
+        cache: CacheStore? = nil,
+        offline: Bool = false
     ) throws -> Swira {
         let (configuration, auth) = try SwiraConfiguration.fromEnvironment(environment)
         return Swira(
             configuration: configuration,
             auth: auth,
             transport: transport,
-            cache: cache
+            cache: cache,
+            offline: offline
         )
     }
 
@@ -102,5 +122,13 @@ public struct Swira: Sendable {
     /// Empties the on-disk cache.
     public func clearCache() async {
         await client.clearCache()
+    }
+
+    /// Expires every cached response whose key starts with `prefix` (every one, if omitted),
+    /// without deleting any of them — see `JiraClient.expireCache`. What a UI's "Refresh" action
+    /// should call: it forces the next read of each one to genuinely check with the server, but
+    /// never makes already-cached data disappear just because that check fails or is offline.
+    public func expireCache(prefix: String = "") async {
+        await client.expireCache(prefix: prefix)
     }
 }

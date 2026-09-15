@@ -456,6 +456,10 @@ async function loadSidebar(fresh) {
     const data = await api(fresh ? "/api/sidebar?fresh=1" : "/api/sidebar");
     renderFavourites(data.favourites);
     renderTree(data.tree);
+    // Refresh expires the whole cache (docs/CLIENT-SPEC.md §3.4), not just the sidebar's own
+    // list — so the filter already open, if any, should revalidate right along with it instead
+    // of silently sitting on pre-Refresh data until the user reopens it by hand.
+    if (fresh && state.filter) await loadIssues();
   } catch (error) {
     showBanner(error.message);
   } finally {
@@ -468,7 +472,9 @@ function renderFavourites(favourites) {
   host.innerHTML = "";
   for (const filter of favourites) {
     const row = document.createElement("div");
-    row.className = "side-item";
+    // Rebuilt from scratch on every sidebar load (Refresh included), so the currently open
+    // filter's highlight has to be reapplied here rather than surviving as DOM state.
+    row.className = "side-item" + (state.filter?.id === filter.id ? " selected" : "");
     row.dataset.filterId = filter.id;
     // Full name, never just the leaf (spec §2.1).
     row.innerHTML = `<span class="star">★</span>${escapeHTML(filter.name)}`;
@@ -520,7 +526,8 @@ function renderTree(nodes) {
   const renderLevel = (items, depth, container) => {
     for (const node of items) {
       const row = document.createElement("div");
-      row.className = "side-item" + (node.filter ? "" : " virtual");
+      const isSelected = node.filter && state.filter?.id === node.filter.id;
+      row.className = "side-item" + (node.filter ? "" : " virtual") + (isSelected ? " selected" : "");
       row.style.paddingLeft = `${14 + depth * 14}px`;
       const isCollapsed = node.children.length > 0 && collapsed.has(node.path);
       const twisty = node.children.length ? (isCollapsed ? "▸" : "▾") : "";
@@ -564,17 +571,20 @@ function selectFilter(filter) {
   $("btn-edit-jql").disabled = false;
   $("btn-delete").disabled = false;
   $("btn-columns").disabled = false;
-  loadIssues();
+  loadIssues({ applySavedSort: true });
 }
 
 /* ---------- Issues ---------- */
 
-async function loadIssues() {
+async function loadIssues(options = {}) {
   if (!state.filter) return;
   try {
     const detail = await api(`/api/filter/${encodeURIComponent(state.filter.id)}`);
     state.filter = detail.filter;
     renderFreshness(detail.meta);
+    if (options.applySavedSort) {
+      await applyFilterSort(detail.filter.jql);
+    }
 
     const params = new URLSearchParams({ limit: "50" });
     if (state.sortField) {
@@ -841,6 +851,37 @@ function groupIssues(issues, groupField) {
     .map(([label, groupIssues]) => ({ label, issues: groupIssues }));
 }
 
+/// Restores the first saved `ORDER BY` term when switching to a filter, mirroring SwiraWin's
+/// `ApplyFilterSort`. The toolbar only represents one term, so additional terms remain in the
+/// filter's JQL but can't be shown there. If the filter's JQL has no `ORDER BY` of its own (or
+/// its field can't be resolved), the current sort selection is left untouched rather than reset,
+/// so it carries over across filter switches.
+const FILTER_SORT_PATTERN =
+  /\border\s+by\s+(?:"([^"]+)"|([A-Za-z0-9_\[\]]+))(?:\s+(asc|desc))?(?:\s*,|$)/i;
+
+async function applyFilterSort(jql) {
+  if (!jql) return;
+  const match = jql.match(FILTER_SORT_PATTERN);
+  if (!match) return;
+  const field = match[1] || match[2];
+  await ensureAllFieldsLoaded();
+  const matching = (state.allFields || []).find((f) =>
+    f.id.toLowerCase() === field.toLowerCase() || f.name.toLowerCase() === field.toLowerCase());
+  if (!matching) return;
+  state.sortField = matching.id;
+  state.sortDir = match[3]?.toLowerCase() === "desc" ? "desc" : "asc";
+}
+
+async function ensureAllFieldsLoaded() {
+  if (state.allFields) return;
+  try {
+    state.allFields = await api("/api/fields");
+  } catch (error) {
+    state.allFields = [];
+    showBanner(error.message);
+  }
+}
+
 function populateSortAndGroupOptions() {
   const baseline = [
     { value: "updated", label: "Updated" },
@@ -860,6 +901,7 @@ function populateSortAndGroupOptions() {
   sortSelect.innerHTML = options
     .map((o) => `<option value="${o.value}">${escapeHTML(o.label)}</option>`).join("");
   sortSelect.value = state.sortField;
+  $("btn-sort-dir").textContent = state.sortDir === "asc" ? "↑" : "↓";
 
   const groupSelect = $("group-field");
   groupSelect.innerHTML = `<option value="">None</option>` + options
@@ -1391,14 +1433,7 @@ let dragColumnIndex = null;
 
 async function openColumnsDialog() {
   $("columns-error").textContent = "";
-  if (!state.allFields) {
-    try {
-      state.allFields = await api("/api/fields");
-    } catch (error) {
-      state.allFields = [];
-      showBanner(error.message);
-    }
-  }
+  await ensureAllFieldsLoaded();
   dialogColumns = state.columns.map((c) => ({ ...c }));
   renderColumnsCurrent();
   $("columns-add-search").value = "";

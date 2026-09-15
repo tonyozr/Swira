@@ -181,15 +181,18 @@ public func swira_get_filter_issues(
             let fieldIds = Set(columns.map(\.value)).union(SearchService.previewFields)
             let page = try await swira.search.search(
                 jql: jql,
-                fields: Array(fieldIds),
+                // Sorted for the same reason as WebAPI's equivalent call: a `Set`'s iteration
+                // order isn't stable across process launches, which would otherwise make an
+                // offline-cached search body not match the one a later run re-sends.
+                fields: fieldIds.sorted(),
                 maxResults: requestedLimit > 0 ? requestedLimit : 50,
                 pageToken: token
             )
             let browseBase = swira.configuration.site.baseURL.absoluteString
             succeed(
                 IssuesDTO(
-                    issues: page.values.map { IssueDTO($0, browseBase: browseBase) },
-                    nextPageToken: page.nextPageToken,
+                    issues: page.value.values.map { IssueDTO($0, browseBase: browseBase) },
+                    nextPageToken: page.value.nextPageToken,
                     columns: columns.map { ColumnRefDTO(label: $0.label, value: $0.value) }
                 ),
                 reply
@@ -203,13 +206,19 @@ public func swira_get_filter_issues(
 /// Columns configured for a filter, falling back to a fixed default set — matches
 /// `WebAPI.resolveColumns`: Jira answers `404` for a filter that has never had columns set,
 /// which is the ordinary case, not an error.
+/// See `WebAPI.resolveColumns`'s doc comment — `.notFound` and `.offline` both mean "nothing to
+/// show but the default set," not an error worth failing the whole issues list over.
 private func resolveColumns(id: String, swira: Swira) async throws -> [FilterColumn] {
     do {
-        let columns = try await swira.filters.columns(id: id)
+        let columns = try await swira.filters.columns(id: id).value
         return columns.isEmpty ? defaultColumns : columns
     } catch let error as SwiraError {
-        if case .notFound = error { return defaultColumns }
-        throw error
+        switch error {
+        case .notFound, .offline:
+            return defaultColumns
+        default:
+            throw error
+        }
     }
 }
 
@@ -466,7 +475,7 @@ public func swira_get_transitions(
     let key = cString(issueKey)
     Task {
         do {
-            let transitions = try await swira.issue.transitions(issueKey: key)
+            let transitions = try await swira.issue.transitions(issueKey: key).value
             succeed(
                 transitions.map { TransitionDTO(id: $0.id, name: $0.name, toStatusName: $0.to?.name) },
                 reply

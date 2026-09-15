@@ -50,10 +50,20 @@ actor JiraProxy {
     private let auth: AuthProvider
     private let session: URLSession
     private let redirectBlocker = NoRedirectDelegate()
+    /// Shared with `Swira.cache` (the same store every REST service reads and writes through
+    /// `JiraClient`) — see `cacheFallback`/`storeInCache` below for how a proxied GET uses it.
+    private let cache: CacheStore
+    /// Mirrors `Swira.offline` (this proxy doesn't go through `JiraClient`, so it can't inherit
+    /// the check there) — see the guard in `send(_:)`.
+    private let offline: Bool
 
-    init(site: JiraSite, auth: AuthProvider) {
+    init(
+        site: JiraSite, auth: AuthProvider, cache: CacheStore = NullCacheStore(), offline: Bool = false
+    ) {
         self.site = site
         self.auth = auth
+        self.cache = cache
+        self.offline = offline
 
         // Ephemeral: no on-disk cache or cookie storage. In-memory cookies still work for the
         // lifetime of the process, which is enough for whatever session state a Jira page sets
@@ -89,10 +99,18 @@ actor JiraProxy {
             outbound.setValue(value, forHTTPHeaderField: name)
         }
 
+        // Only GET is ever cached or served from cache — the same rule `JiraClient.sendCached`
+        // applies, for the same reason: caching a mutation would be meaningless at best, and
+        // replaying one from a stale cache while Jira is unreachable would be actively wrong.
+        let cacheKey = request.method == "GET" ? proxyCacheKey(for: targetURL) : nil
+
         let result: (data: Data, response: HTTPURLResponse)
         do {
             result = try await sendFollowingRedirects(outbound, redirectsRemaining: 10)
         } catch {
+            if let cacheKey, let cached = await cacheFallback(for: cacheKey) {
+                return cached
+            }
             return errorResponse("Jira proxy request failed: \(error.localizedDescription)", status: 502)
         }
 
@@ -109,13 +127,72 @@ actor JiraProxy {
             return externalRedirectPage(to: redirectURL)
         }
 
-        return buildResponse(
+        // Jira answered, but with "you may not" or "just unavailable" — the same two cases
+        // `JiraClient.isCacheWorthyFailure` falls back to cache for. A CAPTCHA/WAF page or a
+        // maintenance 503 is not something worth showing in the split view when a good copy of
+        // the same page is already on hand.
+        if let cacheKey, result.response.statusCode == 403 || result.response.statusCode >= 500,
+           let cached = await cacheFallback(for: cacheKey) {
+            return cached
+        }
+
+        let response = buildResponse(
             status: result.response.statusCode, headers: result.response.allHeaderFields, body: result.data
         )
+        if let cacheKey, (200..<300).contains(result.response.statusCode) {
+            await storeInCache(cacheKey, response)
+        }
+        return response
+    }
+
+    // MARK: - Caching
+
+    /// Excludes the query string only for the site's own host/scheme (implicit — `site.baseURL`
+    /// is fixed per proxy instance) and keeps path+query otherwise, mirroring
+    /// `HTTPRequest.cacheKey`. Prefixed so this can safely share `Swira.cache` with every REST
+    /// service's own keys without ever colliding with one.
+    private func proxyCacheKey(for url: URL) -> String {
+        let query = url.query.map { "?\($0)" } ?? ""
+        return "PROXY GET \(url.path)\(query)"
+    }
+
+    private func cacheFallback(for key: String) async -> HTTPServer.Response? {
+        guard let entry = await cache.load(key),
+              let cached = try? JSONDecoder().decode(ProxyCacheEntry.self, from: entry.data)
+        else {
+            return nil
+        }
+        var response = HTTPServer.Response(
+            status: cached.status,
+            contentType: cached.contentType,
+            body: cached.body,
+            headers: cached.headers.map { ($0.name, $0.value) }
+        )
+        // Tells the framed page (and, via it, the parent) this came from cache rather than a
+        // live Jira response — same spirit as `Cached.isStale` for the REST API's own reads.
+        response.headers.append(("X-Swira-Cache", "stale"))
+        return response
+    }
+
+    private func storeInCache(_ key: String, _ response: HTTPServer.Response) async {
+        let entry = ProxyCacheEntry(
+            status: response.status,
+            contentType: response.contentType,
+            headers: response.headers.map { .init(name: $0.name, value: $0.value) },
+            body: response.body
+        )
+        guard let data = try? JSONEncoder().encode(entry) else { return }
+        await cache.store(CacheEntry(key: key, data: data))
     }
 
     private func send(_ request: URLRequest) async throws -> (data: Data, response: URLResponse) {
-        try await withCheckedThrowingContinuation { continuation in
+        // Same choke point trick as `JiraClient.execute`: fail exactly as a dropped connection
+        // would, so `handle`'s existing catch block — which already falls back to a cached copy
+        // — needs no offline-specific branch of its own.
+        guard !offline else {
+            throw SwiraError.offline(hasStaleCache: false)
+        }
+        return try await withCheckedThrowingContinuation { continuation in
             let task = session.dataTask(with: request) { data, response, error in
                 if let error {
                     continuation.resume(throwing: error)
@@ -407,6 +484,20 @@ actor JiraProxy {
             + "var swiraSnapshotTimer=setInterval(swiraSnapshot,500);"
             + "window.addEventListener(\"pagehide\",function(){clearInterval(swiraSnapshotTimer)});"
     }
+}
+
+/// A proxied response, frozen to disk via `Swira.cache` exactly as it was already built for the
+/// browser (rewritten body, navigation guard injected, cookies rescoped) — so serving it back
+/// later needs no re-processing, just a status/header/body replay.
+private struct ProxyCacheEntry: Codable {
+    struct Header: Codable {
+        let name: String
+        let value: String
+    }
+    let status: Int
+    let contentType: String
+    let headers: [Header]
+    let body: Data
 }
 
 /// Blocks automatic redirect-following so a 3xx response (and its `Location` header) reaches

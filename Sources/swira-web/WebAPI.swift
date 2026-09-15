@@ -16,7 +16,9 @@ struct WebAPI: Sendable {
     init(swira: Swira?, configurationError: String?) {
         self.swira = swira
         self.configurationError = configurationError
-        self.proxy = swira.map { JiraProxy(site: $0.configuration.site, auth: $0.auth) }
+        self.proxy = swira.map {
+            JiraProxy(site: $0.configuration.site, auth: $0.auth, cache: $0.cache, offline: $0.offline)
+        }
     }
 
     private let encoder: JSONEncoder = {
@@ -64,10 +66,16 @@ struct WebAPI: Sendable {
             let swira = try requireSwira()
             // The user's own request for freshness (the Refresh button, spec-driven necessity:
             // starring a filter in Jira's own UI has no way to signal this client to notice)
-            // overrides the default TTL.
-            let policy: CachePolicy = request.query["fresh"] == "1" ? .networkOnly : .default
-            let favourites = try await swira.filters.favourites(policy: policy)
-            let tree = try await swira.filters.tree(policy: policy)
+            // expires the *entire* cache rather than just overriding this one read's policy: a
+            // filter opened right after Refresh should also recheck with the server, not answer
+            // from a copy that predates the refresh. Expiring, not `invalidateCache` (a hard
+            // drop): each entry stays available as a fallback if the recheck it triggers fails or
+            // the app is offline — Refresh forces a server round trip, it doesn't promise one.
+            if request.query["fresh"] == "1" {
+                await swira.expireCache()
+            }
+            let favourites = try await swira.filters.favourites(policy: .default)
+            let tree = try await swira.filters.tree(policy: .default)
             // The sidebar's tree section holds only name-structured filters (spec §2.2);
             // plain names live in Favourites alone.
             let structured = tree.value.filter { !$0.children.isEmpty || $0.path.segments.count > 1 }
@@ -147,16 +155,23 @@ struct WebAPI: Sendable {
 
             let page = try await swira.search.search(
                 jql: jql,
-                fields: Array(fieldIds),
+                // Sorted, not just `Array(fieldIds)`: a `Set`'s iteration order isn't stable
+                // across process launches (different hash seed each run), so leaving it
+                // unsorted made the encoded search body — and with it `HTTPRequest.cacheKey`'s
+                // body-hash suffix — differ between two logically identical requests made in two
+                // different runs. Confirmed live: opening the same filter again under
+                // `--offline` reported "nothing cached" for a filter that really had been.
+                fields: fieldIds.sorted(),
                 maxResults: limit,
                 pageToken: request.query["pageToken"]
             )
             let browseBase = swira.configuration.site.baseURL.absoluteString
             return try json(IssuesDTO(
-                issues: page.values.map { IssueDTO($0, browseBase: browseBase) },
-                nextPageToken: page.nextPageToken,
+                issues: page.value.values.map { IssueDTO($0, browseBase: browseBase) },
+                nextPageToken: page.value.nextPageToken,
                 columns: resolvedColumns.columns,
-                columnsAreDefault: resolvedColumns.isDefault
+                columnsAreDefault: resolvedColumns.isDefault,
+                meta: MetaDTO(page)
             ))
         }
 
@@ -270,7 +285,7 @@ struct WebAPI: Sendable {
            segments[0] == "api", segments[1] == "issue", segments[3] == "transitions" {
             let swira = try requireSwira()
             let transitions = try await swira.issue.transitions(issueKey: segments[2])
-            return try json(transitions.map {
+            return try json(transitions.value.map {
                 TransitionDTO(id: $0.id, name: $0.name, toStatusName: $0.to?.name)
             })
         }
@@ -416,19 +431,25 @@ struct WebAPI: Sendable {
 
     /// The columns to show for a filter, falling back to a sensible default set when none are
     /// configured — Jira answers `404` for `GET .../columns` on a filter that has never had
-    /// columns set, which is the ordinary case, not an error condition.
+    /// columns set, which is the ordinary case, not an error condition. `.offline` gets the same
+    /// treatment: a 404 is never cached (only successful bodies are — see `JiraClient.fetchAndCache`),
+    /// so a filter with no custom columns has nothing for `--offline` to serve either, and the
+    /// same default set is exactly what should show instead of failing the whole issues list over
+    /// what column headers to use.
     private func resolveColumns(id: String, swira: Swira) async throws -> ResolvedColumns {
         do {
-            let columns = try await swira.filters.columns(id: id)
+            let columns = try await swira.filters.columns(id: id).value
             guard !columns.isEmpty else {
                 return ResolvedColumns(columns: defaultColumns, isDefault: true)
             }
             return ResolvedColumns(columns: columns, isDefault: false)
         } catch let error as SwiraError {
-            if case .notFound = error {
+            switch error {
+            case .notFound, .offline:
                 return ResolvedColumns(columns: defaultColumns, isDefault: true)
+            default:
+                throw error
             }
-            throw error
         }
     }
 
@@ -563,12 +584,20 @@ private struct IssuesDTO: Encodable {
     let nextPageToken: String?
     let columns: [ColumnRefDTO]
     let columnsAreDefault: Bool
+    let meta: MetaDTO
 
-    init(issues: [IssueDTO], nextPageToken: String?, columns: [FilterColumn], columnsAreDefault: Bool) {
+    init(
+        issues: [IssueDTO],
+        nextPageToken: String?,
+        columns: [FilterColumn],
+        columnsAreDefault: Bool,
+        meta: MetaDTO
+    ) {
         self.issues = issues
         self.nextPageToken = nextPageToken
         self.columns = columns.map { ColumnRefDTO(label: $0.label, value: $0.value) }
         self.columnsAreDefault = columnsAreDefault
+        self.meta = meta
     }
 }
 

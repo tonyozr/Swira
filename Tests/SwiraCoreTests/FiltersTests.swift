@@ -342,8 +342,8 @@ struct FiltersServiceTests {
         """#.utf8)
         let columns = try await makeService(MockTransport(stubs: [.ok(body)])).columns(id: "10")
 
-        #expect(columns.map(\.value) == ["issuekey", "summary"])
-        #expect(columns.first?.label == "Key")
+        #expect(columns.value.map(\.value) == ["issuekey", "summary"])
+        #expect(columns.value.first?.label == "Key")
     }
 
     @Test("Setting columns on Cloud sends a JSON body — the only shape that endpoint accepts")

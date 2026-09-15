@@ -166,7 +166,7 @@ struct Filters: AsyncParsableCommand {
             guard preview > 0 else { return }
             print("\nPreview:")
             let issues = try await swira.search.preview(filterId: id, limit: preview)
-            for issue in issues.values {
+            for issue in issues.value.values {
                 print("  \(issue.key.padded(to: 12)) \(issue.summary ?? "")  (\(issue.status ?? "?"))")
             }
         }
@@ -317,15 +317,15 @@ struct Search: AsyncParsableCommand {
             let total = try await swira.search.approximateCount(jql: jql)
             // Approximate by design: the cursor-based search endpoint stopped returning an exact
             // total, so presenting this as exact would be a lie.
-            print("About \(total) matching issues.\n")
+            print("About \(total.value) matching issues.\n")
         }
 
         let page = try await swira.search.search(jql: jql, maxResults: limit)
-        for issue in page.values {
+        for issue in page.value.values {
             print("\(issue.key.padded(to: 12)) \(issue.summary ?? "")")
             print("\(String(repeating: " ", count: 12)) \(issue.status ?? "?") · \(issue.issueType ?? "?") · \(issue.assignee?.displayName ?? "unassigned")")
         }
-        if page.hasMore {
+        if page.value.hasMore {
             print("\n(more pages available)")
         }
     }
